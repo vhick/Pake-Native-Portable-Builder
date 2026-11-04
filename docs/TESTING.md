@@ -46,3 +46,8 @@ dependency and checks the resulting lockfile. A dependency incompatibility
 fails the build rather than publishing a profile-writing executable. This
 specific Rust dependency upgrade has not yet been verified by a full Windows
 build. Reference: https://tauri.app/release/tauri/v2.12.0/
+
+
+## r6 WiX dependency preflight
+
+The GitHub runner validates `wix311-binaries.zip` against the known upstream-release SHA-256 and checks that `candle.exe` and `light.exe` were extracted into `work/tools/wix311`. No WiX installer is executed. This is a build prerequisite only: the final release ZIP must not contain an MSI or WiX binaries.

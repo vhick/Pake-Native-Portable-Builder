@@ -80,8 +80,8 @@ class BuilderTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): patchmod.patch_files(root)
 
     def test_existing_release_check_distinguishes_error(self):
-        tag='portable-example-v1.0.0-pake3.18.0-r5-123456789abc'
-        zipname='ExamplePortable_1.0.0_Pake3.18.0_r5_win-x64.zip'
+        tag='portable-example-v1.0.0-pake3.18.0-r6-123456789abc'
+        zipname='ExamplePortable_1.0.0_Pake3.18.0_r6_win-x64.zip'
         self.assertFalse(checkmod.classify_return(1, '', 'release not found', tag, zipname))
         valid={'isDraft':False,'body':'portable-release-publisher:managed:v2',
                'assets':[{'name':zipname},{'name':'SHA256SUMS.txt'}]}
@@ -115,6 +115,19 @@ class BuilderTests(unittest.TestCase):
         self.assertIn('cargo update -p tauri --precise 2.12.0', build)
         self.assertIn('AppDirectoriesOverride::Root', patchmod.CONTEXT_PATCH)
         self.assertIn('src-tauri', code)
+
+    def test_wix_uses_pinned_portable_binaries_not_quiet_install(self):
+        code = (ROOT / 'scripts/ensure-wix.ps1').read_text(encoding='utf-8')
+        self.assertIn('wix3112rtm/wix311-binaries.zip', code)
+        self.assertIn('2C1888D5D1DBA377FC7FA14444CF556963747FF9A0A289A3599CF09DA03B9E2E', code)
+        self.assertIn('Get-FileHash', code)
+        self.assertIn('Expand-Archive', code)
+        self.assertIn("'light.exe'", code)
+        self.assertIn("'candle.exe'", code)
+        self.assertIn('$env:GITHUB_PATH', code)
+        self.assertNotIn('Start-Process', code)
+        self.assertNotIn('wix311.exe', code)
+        self.assertNotIn('ProgramFiles(x86)', code)
 
     def test_yaml_has_no_installer_publishing(self):
         content=(ROOT/'.github/workflows/build-native.yml').read_text()

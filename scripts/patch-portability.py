@@ -28,11 +28,11 @@ CONTEXT_PATCH = '''let mut context = tauri::generate_context!();
 WINDOW_DATA_PATCH = '''pub fn get_data_dir(app: &AppHandle, package_name: String) -> std::io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let data_dir = {
-        // PakePortable R5: controlled per-app WebView2 profile; never relocate
+        // PakePortable R6: controlled per-app WebView2 profile; never relocate
         // existing host profiles or write into a shared LocalAppData directory.
         let executable = std::env::current_exe()?;
         let root = executable.parent().ok_or_else(||
-            std::io::Error::other("PakePortableR5: executable directory not found"))?;
+            std::io::Error::other("PakePortableR6: executable directory not found"))?;
         root.join("Data").join("WebView").join(package_name)
     };
     #[cfg(not(target_os = "windows"))]
@@ -54,7 +54,7 @@ def patch_files(root: Path):
         raise RuntimeError("Upstream lib.rs context layout changed; portable path override not applied")
     lib = lib.replace(anchor, CONTEXT_PATCH, 1)
     pattern = re.compile(r"pub fn get_data_dir\(app: &AppHandle, package_name: String\) -> std::io::Result<PathBuf>\s*\{.*?\n\}\s*(?=pub fn read_last_url\()", re.S)
-    if len(pattern.findall(util)) != 1 or "PakePortableR5" in util:
+    if len(pattern.findall(util)) != 1 or "PakePortableR6" in util:
         raise RuntimeError("Upstream util.rs WebView data layout changed; refusing nonportable build")
     util = pattern.sub(WINDOW_DATA_PATCH + "\n", util, count=1)
     if "root.join(\"Data\").join(\"WebView\")" not in util:

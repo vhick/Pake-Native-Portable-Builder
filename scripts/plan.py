@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
-BUILDER_REVISION = "r5"
+BUILDER_REVISION = "r6"
 
 
 def safe_public_url(value: str, field: str) -> str:

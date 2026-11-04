@@ -1,4 +1,4 @@
-# Pake Portable Website App Builder r5
+# Pake Portable Website App Builder r6
 
 **Create a portable Windows website app in GitHub Actions without installing Node, Rust or a website builder on your own PC.** The generated **website app itself** launches by double-clicking its `.exe`. This replaces the old r1-r4 behavior of packaging the Pake command-line tool.
 
@@ -25,7 +25,7 @@ Example workflow inputs:
 Result on your **repository's Releases page**:
 
 ```
-ExcalidrawPortable_1.0.0_Pake3.18.0_r5_win-x64.zip
+ExcalidrawPortable_1.0.0_Pake3.18.0_r6_win-x64.zip
 SHA256SUMS.txt                       (produced by shared publisher)
 ```
 
@@ -55,11 +55,11 @@ No `.msi`, setup `.exe`, `.paf.exe`, or precompiled Pake CLI is in the published
 ### Existing Pake r4 builder repository — recommended upgrade
 
 1. In GitHub Desktop, open your existing independent Pake builder repository (not a fork of `tw93/Pake`).
-2. Download and extract **Pake-Portable-Website-App-Builder-r5.zip** from this conversation.
+2. Download and extract **Pake-Portable-Website-App-Builder-r6.zip** from this conversation.
 3. Copy **all** contents, including `.github`, into that repository folder, allowing overwrites.
 4. The ZIP deliberately uses the same filename `.github/workflows/build-native.yml` as r4, so it **replaces** the old CLI workflow. It appears in GitHub Actions as **Build Website as Portable Windows App**.
-5. Old unused r4 scripts may remain in the repository. They are not executed by the new workflow. For a clean repository, compare the folders and delete old-only `launcher/` and `scripts/build-cli.ps1`, `scripts/build-launcher.ps1`, `scripts/check-existing.ps1`, and `scripts/validate.ps1` only if the r5 equivalent is already present. (The file `scripts/validate.py` is a different new script.) The existing r4 GitHub Releases are untouched.
-6. In GitHub Desktop, enter a commit summary like `Replace Pake CLI builder with portable website app workflow r5`.
+5. Old unused r4 scripts may remain in the repository. They are not executed by the new workflow. For a clean repository, compare the folders and delete old-only `launcher/` and `scripts/build-cli.ps1`, `scripts/build-launcher.ps1`, `scripts/check-existing.ps1`, and `scripts/validate.ps1` only if the r6 equivalent is already present. (The file `scripts/validate.py` is a different new script.) The existing r4 GitHub Releases are untouched.
+6. In GitHub Desktop, enter a commit summary like `Replace Pake CLI builder with portable website app workflow r6`.
 7. Select **Commit to main**, then **Push origin**.
 8. On GitHub, open the repository → **Actions** → **Build Website as Portable Windows App** → **Run workflow**.
 9. Fill in `website_url` and `app_name`; leave the other defaults for a first test. Leave **Publish ZIP** checked.
@@ -86,7 +86,7 @@ Always **close** the program completely before updating. Copy the **entire exist
 - Website downloads intentionally use the normal Windows Downloads folder. Windows OS telemetry, caches, recent-file records and program integrations may also create traces.
 - ZIP contains PortableApps Menu metadata, but is **not** an officially certified PortableApps.com package or `.paf.exe` installer.
 - GitHub Actions performs static/package verification; unattended Windows runners do **not** prove that website GUI features, logins, relocation and host trace cleanup work. Follow the manual checks in `docs/TESTING.md`.
-- Shared Publisher refuses to replace an existing different managed release. The tag includes URL/config fingerprint, Pake version, app version and builder r5.
+- Shared Publisher refuses to replace an existing different managed release. The tag includes URL/config fingerprint, Pake version, app version and builder r6.
 - `publish:false` produces no downloadable asset (because this project intentionally avoids intermediate Actions artifact storage). Leave it `true` for normal use.
 - Standard Windows hosted runners are free/unlimited for public repositories under GitHub's current standard-runner policy; private repositories consume GitHub Actions minutes/storage and caches. Rust cache may be turned off with workflow input `use_rust_cache:false`.
 - Pake is GPL-3.0-or-later. Review both its upstream license, included license exception and website icons/trademarks before distributing resulting binaries. The kit retains the source patch and upstream commit for GPL provenance; distributing compiled GPL code may require more source-availability steps. See `docs/PORTABILITY.md`.
@@ -100,6 +100,14 @@ fails the build rather than publishing a profile-writing executable. This
 specific Rust dependency upgrade has not yet been verified by a full Windows
 build. Reference: https://tauri.app/release/tauri/v2.12.0/
 
+## r6 fix: Windows build prerequisite (from uploaded r5 logs)
+
+The r5 GitHub Actions run stopped in `scripts/ensure-wix.ps1` before website compilation, reporting `WiX 3.11 light.exe missing after installation`. The earlier helper silently relied on a system-wide installer and a hardcoded `Program Files (x86)` folder.
+
+r6 instead downloads the official WiX 3.11.2 **portable command-line ZIP** from the pinned `wix3112rtm` release, checks its fixed SHA-256 against independently published hashes, extracts into ephemeral `work/tools/wix311`, and exposes `candle.exe` / `light.exe` to the build process. No WiX system installation, elevation, or third-party installer engine is involved. Pake may still create a temporary MSI internally, but only the compiled website EXE is staged into the published portable ZIP. The shared publisher remains at `v1.1.1`.
+
+The r5 failure is fixed by source changes, but no actual Windows compilation of r6 has been performed in this environment. If the next run stops after this step, supply its new log for a separate diagnosis.
+
 ## What changed from r4
 
-r4 packaged the Pake CLI with `PakePortable.exe` as a console launcher. r5 runs the actual **website-to-application** build in GitHub Actions, patches the generated Tauri application to use portable Data directories, keeps the real compiled website GUI EXE, creates a native ZIP and publishes it through the existing shared publisher. This is a new build pipeline, not an upgrade to r4's CLI tool.
+r4 packaged the Pake CLI with `PakePortable.exe` as a console launcher. r6 runs the actual **website-to-application** build in GitHub Actions, patches the generated Tauri application to use portable Data directories, keeps the real compiled website GUI EXE, creates a native ZIP and publishes it through the existing shared publisher. This is a new build pipeline, not an upgrade to r4's CLI tool.
