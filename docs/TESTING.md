@@ -4,7 +4,8 @@
 
 | Test | Implemented step |
 | --- | --- |
-| Stable tag and SHA match | resolve-upstream + fetch-upstream |
+| Stable tag and SHA match | resolve-upstream self-test + resolve-upstream + fetch-upstream |
+| Release precheck: missing/existing/error | check-existing.ps1 -SelfTest (mocked responses) |
 | Build real CLI | pnpm lock install + cli:build + npm pack |
 | Compile launcher | `dotnet publish -r win-x64 --self-contained true` |
 | PE header + execution | validate.ps1 + `--help`/`--version` |

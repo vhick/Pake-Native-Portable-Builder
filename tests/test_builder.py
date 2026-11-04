@@ -59,7 +59,18 @@ class BuilderStructure(unittest.TestCase):
         self.assertIn('if ($SelfTest)', code)
         self.assertIn('V3.17.6', code)
         self.assertIn('./scripts/resolve-upstream.ps1 -SelfTest', workflow)
-        self.assertIn('native-r3', workflow)
+        self.assertIn('native-r4', workflow)
+
+    def test_release_precheck_clears_handled_404(self):
+        script = (ROOT / 'scripts/check-existing.ps1').read_text()
+        workflow = (ROOT / '.github/workflows/build-native.yml').read_text()
+        self.assertIn("$global:LASTEXITCODE = 0", script)
+        self.assertIn("$ghExitCode = $LASTEXITCODE", script)
+        self.assertIn("-Response 'release not found'", script)
+        self.assertIn('HTTP 403: Resource not accessible', script)
+        self.assertIn("if ($SelfTest)", script)
+        self.assertIn("./scripts/check-existing.ps1 -SelfTest", workflow)
+        self.assertRegex(script, r"(?s)Test-PublishedRelease -ExitCode \$ghExitCode.*\$global:LASTEXITCODE = 0")
 
     def test_all_script_files_are_nonempty(self):
         for script in (ROOT / 'scripts').glob('*.ps1'):

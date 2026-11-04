@@ -44,6 +44,8 @@ jobs:
           REQUESTED_TAG: ${{ inputs.upstream_tag }}
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/resolve-upstream.ps1
+      - name: Test release precheck against local fixtures
+        run: ./scripts/check-existing.ps1 -SelfTest
       - name: Skip unchanged managed release
         id: precheck
         env:
@@ -86,9 +88,9 @@ jobs:
         uses: vhick/portable-release-publisher@v1.1.1
         with:
           files: release/*.zip
-          tag: portable-v${{ steps.upstream.outputs.version }}-native-r3
+          tag: portable-v${{ steps.upstream.outputs.version }}-native-r4
           tag-prefix: portable-
-          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r3
+          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r4
           keep-releases: '3'
           prune: 'false'
           dry-run: 'true'
@@ -97,9 +99,9 @@ jobs:
         uses: vhick/portable-release-publisher@v1.1.1
         with:
           files: release/*.zip
-          tag: portable-v${{ steps.upstream.outputs.version }}-native-r3
+          tag: portable-v${{ steps.upstream.outputs.version }}-native-r4
           tag-prefix: portable-
-          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r3
+          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r4
           keep-releases: '3'
           prune: 'false'
           dry-run: 'false'
