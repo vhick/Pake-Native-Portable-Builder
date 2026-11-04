@@ -1,107 +1,209 @@
-name: Build Pake Native Portable
+name: Build Website as Portable Windows App
+
 on:
   workflow_dispatch:
     inputs:
-      upstream_tag:
-        description: 'Optional stable Pake tag (blank = latest stable release)'
+      website_url:
+        description: 'Public website URL (e.g. https://excalidraw.com)'
+        required: true
+        type: string
+      app_name:
+        description: 'App name (e.g. Excalidraw, GitHub Work)'
+        required: true
+        type: string
+      icon_url:
+        description: 'Optional direct HTTPS icon URL; blank = Pake site icon'
         required: false
         default: ''
         type: string
-      publish:
-        description: 'Publish only after validation; false = build/validate only'
+      app_version:
+        description: 'Your app version (example 1.0.0)'
+        required: true
+        default: '1.0.0'
+        type: string
+      width:
+        description: 'Window width in pixels'
+        required: true
+        default: '1200'
+        type: string
+      height:
+        description: 'Window height in pixels'
+        required: true
+        default: '780'
+        type: string
+      new_window:
+        description: 'Allow website popup windows'
+        required: true
+        type: boolean
+        default: false
+      fullscreen:
+        description: 'Start fullscreen'
+        required: true
+        type: boolean
+        default: false
+      hide_window_decorations:
+        description: 'Hide native title bar/window decorations'
+        required: true
+        type: boolean
+        default: false
+      no_restore_last_url:
+        description: 'Always open the original URL, keep cookies and sessions'
+        required: true
+        type: boolean
+        default: false
+      upstream_tag:
+        description: 'Optional stable Pake tag, such as V3.18.0; blank = latest'
+        required: false
+        default: ''
+        type: string
+      use_rust_cache:
+        description: 'Cache Rust dependencies (uses GitHub Actions cache storage)'
         required: true
         type: boolean
         default: true
+      publish:
+        description: 'Publish the portable ZIP to GitHub Releases (recommended)'
+        required: true
+        type: boolean
+        default: true
+
 permissions:
   contents: write
+
 concurrency:
-  group: pake-native-release
+  group: pake-portable-website-${{ github.ref }}
   cancel-in-progress: false
+
 jobs:
   build:
-    name: Native x64 portable build
+    name: Compile website to real portable x64 EXE
     runs-on: windows-latest
-    timeout-minutes: 80
+    timeout-minutes: 115
     defaults:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - name: Parse all PowerShell scripts before downloading dependencies
+      - name: Checkout the independent builder repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Python for input, package and data-safety checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test builder and parse PowerShell before expensive compilation
         run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Builder tests failed' }
           $errorsFound = 0
           Get-ChildItem -Path scripts -Filter '*.ps1' | ForEach-Object {
             $tokens=$null; $parseErrors=$null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$parseErrors)
             foreach($problem in $parseErrors) { Write-Host "$($_.Name): $problem"; $errorsFound++ }
           }
-          if($errorsFound -gt 0){throw "PowerShell parsing failed: $errorsFound errors"}
-      - name: Test stable release selection against local API fixtures
+          if($errorsFound -gt 0) { throw "PowerShell source has $errorsFound parse errors" }
+      - name: Test stable Pake release detection
         run: ./scripts/resolve-upstream.ps1 -SelfTest
-      - name: Resolve stable upstream tag and commit
+      - name: Resolve latest stable upstream Pake version and exact commit
         id: upstream
+        run: ./scripts/resolve-upstream.ps1
         env:
           REQUESTED_TAG: ${{ inputs.upstream_tag }}
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/resolve-upstream.ps1
-      - name: Test release precheck against local fixtures
-        run: ./scripts/check-existing.ps1 -SelfTest
-      - name: Skip unchanged managed release
+      - name: Validate website form inputs and determine unique release identity
+        id: plan
+        run: python scripts/plan.py
+        env:
+          INPUT_WEBSITE_URL: ${{ inputs.website_url }}
+          INPUT_APP_NAME: ${{ inputs.app_name }}
+          INPUT_ICON_URL: ${{ inputs.icon_url }}
+          INPUT_APP_VERSION: ${{ inputs.app_version }}
+          INPUT_WIDTH: ${{ inputs.width }}
+          INPUT_HEIGHT: ${{ inputs.height }}
+          INPUT_NEW_WINDOW: ${{ inputs.new_window }}
+          INPUT_FULLSCREEN: ${{ inputs.fullscreen }}
+          INPUT_HIDE_WINDOW_DECORATIONS: ${{ inputs.hide_window_decorations }}
+          INPUT_NO_RESTORE_LAST_URL: ${{ inputs.no_restore_last_url }}
+          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
+      - name: Skip already published exact site configuration
         id: precheck
+        if: ${{ inputs.publish }}
+        run: python scripts/check-existing.py
         env:
           GH_TOKEN: ${{ github.token }}
-          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
-          DO_PUBLISH: ${{ inputs.publish }}
-        run: ./scripts/check-existing.ps1
-      - uses: actions/setup-node@v4
-        if: ${{ steps.precheck.outputs.skip != 'true' }}
-        with:
-          node-version: '22'
-      - uses: actions/setup-dotnet@v4
-        if: ${{ steps.precheck.outputs.skip != 'true' }}
-        with:
-          dotnet-version: '8.0.x'
-      - name: Fetch verified upstream tag
+      - name: Fetch Pake stable source and verify resolved git commit
         if: ${{ steps.precheck.outputs.skip != 'true' }}
         run: ./scripts/fetch-upstream.ps1
         env:
           PAKE_TAG: ${{ steps.upstream.outputs.tag }}
           PAKE_COMMIT: ${{ steps.upstream.outputs.commit }}
-      - name: Build real upstream CLI and install portable dependencies
+      - name: Setup Node.js to build official Pake CLI
         if: ${{ steps.precheck.outputs.skip != 'true' }}
-        run: ./scripts/build-cli.ps1
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Setup Rust x64 MSVC toolchain
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Optionally restore Rust build cache
+        if: ${{ steps.precheck.outputs.skip != 'true' && inputs.use_rust_cache }}
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: work/upstream/src-tauri -> target
+          shared-key: pake-website-win-x64-r5
+      - name: Check upstream Windows MSI tool (temporary Pake output only)
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        run: ./scripts/ensure-wix.ps1
+      - name: Apply true portable source redirection and compile website EXE
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        timeout-minutes: 95
+        run: ./scripts/build-website.ps1
+      - name: Stage native executable, official app icon, Data and menu metadata
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        run: ./scripts/stage-package.ps1
         env:
-          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
           PAKE_TAG: ${{ steps.upstream.outputs.tag }}
           PAKE_COMMIT: ${{ steps.upstream.outputs.commit }}
-      - name: Compile Windows portable launcher
+      - name: Validate real x64 PE, portable ZIP and all empty directories
         if: ${{ steps.precheck.outputs.skip != 'true' }}
-        run: ./scripts/build-launcher.ps1
-      - name: Validate executable, runtime and independent ZIP
-        if: ${{ steps.precheck.outputs.skip != 'true' }}
-        id: verify
-        run: ./scripts/validate.ps1
-        env:
-          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
-      - name: Preview shared release publisher (no uploads)
+        run: python scripts/validate.py
+      - name: Preview release using shared publisher v1.1.1 (no upload)
         if: ${{ steps.precheck.outputs.skip != 'true' }}
         uses: vhick/portable-release-publisher@v1.1.1
         with:
           files: release/*.zip
-          tag: portable-v${{ steps.upstream.outputs.version }}-native-r4
+          tag: ${{ steps.plan.outputs.release_tag }}
+          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r5)
           tag-prefix: portable-
-          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r4
           keep-releases: '3'
           prune: 'false'
           dry-run: 'true'
-      - name: Publish validated ZIP through shared publisher
-        if: ${{ inputs.publish && steps.precheck.outputs.skip != 'true' }}
+      - name: Publish ZIP directly to this repository's GitHub Releases
+        if: ${{ steps.precheck.outputs.skip != 'true' && inputs.publish }}
         uses: vhick/portable-release-publisher@v1.1.1
         with:
           files: release/*.zip
-          tag: portable-v${{ steps.upstream.outputs.version }}-native-r4
+          tag: ${{ steps.plan.outputs.release_tag }}
+          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r5)
           tag-prefix: portable-
-          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r4
           keep-releases: '3'
           prune: 'false'
           dry-run: 'false'
+      - name: Final build summary
+        if: ${{ success() }}
+        env:
+          SKIP: ${{ steps.precheck.outputs.skip }}
+          APP: ${{ inputs.app_name }}
+          ZIP_NAME: ${{ steps.plan.outputs.zip_name }}
+          RELEASE_TAG: ${{ steps.plan.outputs.release_tag }}
+          PUBLISHED: ${{ inputs.publish }}
+        run: |
+          if ($env:SKIP -eq 'true') {
+            Add-Content $env:GITHUB_STEP_SUMMARY "Existing verified portable release: **$env:RELEASE_TAG**"
+          } elseif ($env:PUBLISHED -eq 'true') {
+            Add-Content $env:GITHUB_STEP_SUMMARY "Built **$env:APP** as a real Windows portable application. Download **$env:ZIP_NAME** under GitHub Releases tag **$env:RELEASE_TAG**."
+          } else {
+            Add-Content $env:GITHUB_STEP_SUMMARY 'Build-and-validate only. Publish was disabled; there is no downloadable release asset.'
+          }

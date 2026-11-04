@@ -1,80 +1,128 @@
-"""Source-only checks. Windows runtime tests run in scripts/validate.ps1."""
+"""Offline builder contract tests. Not a substitute for a real Windows runtime test."""
 from pathlib import Path
-import re
+import importlib.util
+import json
+import struct
+import tempfile
 import unittest
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
-class BuilderStructure(unittest.TestCase):
-    def test_required_files(self):
-        for name in [
-            '.github/workflows/build-native.yml',
-            'launcher/Program.cs', 'launcher/PakePortable.csproj',
-            'scripts/resolve-upstream.ps1', 'scripts/fetch-upstream.ps1',
-            'scripts/build-cli.ps1', 'scripts/build-launcher.ps1',
-            'scripts/validate.ps1', 'scripts/check-existing.ps1',
-            'README.md', 'docs/AUDIT.md', 'docs/TESTING.md',
-        ]:
-            self.assertTrue((ROOT / name).is_file(), name)
-    def test_native_mode_has_no_fake_portableapps_installer(self):
-        workflow = (ROOT / '.github/workflows/build-native.yml').read_text()
-        self.assertIn('portable-release-publisher@v1.1.1', workflow)
-        self.assertNotIn('Portable-Package-Builder@', workflow)
-        self.assertIn('release/*.zip', workflow)
-        self.assertNotIn('upload-artifact', workflow)
-        self.assertRegex(workflow, r"dry-run: 'true'")
-        self.assertRegex(workflow, r"dry-run: 'false'")
-    def test_empty_directory_recovery_included(self):
-        code = (ROOT / 'launcher/Program.cs').read_text()
-        self.assertIn('Directory.EnumerateDirectories', code)
-        self.assertIn('CaptureExternalRoots', code)
-        self.assertIn('RunSelfTest', code)
-        self.assertIn('Directory.Exists(Path.Combine(dest, "alpha", "beta", "empty"))', code)
-        self.assertIn('pre-existing host root protected', code)
-        self.assertIn('CopyVerified(saved, path)', code)
-    def test_no_opaque_launcher(self):
-        project = (ROOT / 'launcher/PakePortable.csproj').read_text()
-        self.assertIn('<OutputType>Exe</OutputType>', project)
-        self.assertIn('<PublishSingleFile>true</PublishSingleFile>', project)
-        self.assertNotIn('ScriptToExe', project)
-    def test_powershell_string_interpolation_regression(self):
-        """Catch accidental '$tag:' interpolations before GitHub's actual PS parser check.
 
-        PowerShell scopes like $env:FOO and $script:name are deliberate exceptions.
-        This is a source lint test, not a replacement for the PowerShell parser.
-        """
-        allowed_scopes = {'env', 'script', 'global', 'local', 'private', 'using', 'function', 'variable'}
-        for script in (ROOT / 'scripts').glob('*.ps1'):
-            source = script.read_text(encoding='utf-8')
-            for match in re.finditer(r'(?<![`$])\$([A-Za-z_][A-Za-z0-9_]*):', source):
-                self.assertIn(match.group(1).lower(), allowed_scopes,
-                              f'{script.name}:{source.count(chr(10), 0, match.start())+1}: ambiguous {match.group()}')
+def module(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / 'scripts' / (name + '.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-    def test_release_resolver_enumeration_regression(self):
-        code = (ROOT / 'scripts/resolve-upstream.ps1').read_text()
-        workflow = (ROOT / '.github/workflows/build-native.yml').read_text()
-        self.assertNotRegex(code, r'(?m)^\s*\$[A-Za-z_]\w*\s*=\s*@\(Invoke-RestMethod')
-        self.assertIn('[object[]]$releases = $releaseResponse', code)
-        self.assertIn('foreach ($release in $Releases)', code)
-        self.assertIn('if ($SelfTest)', code)
-        self.assertIn('V3.17.6', code)
-        self.assertIn('./scripts/resolve-upstream.ps1 -SelfTest', workflow)
-        self.assertIn('native-r4', workflow)
 
-    def test_release_precheck_clears_handled_404(self):
-        script = (ROOT / 'scripts/check-existing.ps1').read_text()
-        workflow = (ROOT / '.github/workflows/build-native.yml').read_text()
-        self.assertIn("$global:LASTEXITCODE = 0", script)
-        self.assertIn("$ghExitCode = $LASTEXITCODE", script)
-        self.assertIn("-Response 'release not found'", script)
-        self.assertIn('HTTP 403: Resource not accessible', script)
-        self.assertIn("if ($SelfTest)", script)
-        self.assertIn("./scripts/check-existing.ps1 -SelfTest", workflow)
-        self.assertRegex(script, r"(?s)Test-PublishedRelease -ExitCode \$ghExitCode.*\$global:LASTEXITCODE = 0")
+planmod = module('plan')
+patchmod = module('patch-portability')
+checkmod = module('check-existing')
+zipmod = module('zip-package')
+validmod = module('validate')
 
-    def test_all_script_files_are_nonempty(self):
-        for script in (ROOT / 'scripts').glob('*.ps1'):
-            self.assertGreater(script.stat().st_size, 100)
 
-if __name__ == '__main__':
-    unittest.main()
+class BuilderTests(unittest.TestCase):
+    def fixture(self):
+        return dict(website_url='https://excalidraw.com', app_name='Excalidraw',
+                    app_version='1.0.0', pake_version='3.18.0', icon_url='',
+                    width='1200', height='780')
+
+    def test_valid_plan_and_stable_identity(self):
+        plan = planmod.make_plan(self.fixture())
+        self.assertEqual(plan['exe'], 'ExcalidrawPortable.exe')
+        self.assertEqual(plan['folder'], 'ExcalidrawPortable')
+        self.assertEqual(plan['releaseTag'], planmod.make_plan(self.fixture())['releaseTag'])
+        self.assertTrue(plan['releaseTag'].startswith('portable-excalidraw-'))
+
+    def test_config_change_changes_release_identity(self):
+        a = self.fixture(); b = self.fixture(); b['width'] = '1300'
+        self.assertNotEqual(planmod.make_plan(a)['releaseTag'], planmod.make_plan(b)['releaseTag'])
+
+    def test_reject_private_or_invalid_url(self):
+        for value in ('http://localhost:3000', 'http://127.0.0.1', 'http://192.168.1.2',
+                      'file:///C:/x', 'ftp://google.com', 'https://a.local',
+                      'https://user:pw@site.com', 'http://[::1]/'):
+            obj = self.fixture(); obj['website_url'] = value
+            with self.assertRaises(ValueError, msg=value): planmod.make_plan(obj)
+
+    def test_invalid_windows_names_and_versions(self):
+        for name in ('..', 'CON?', 'A/B', 'A', 'Alpha\nBeta'):
+            obj = self.fixture(); obj['app_name'] = name
+            with self.assertRaises(ValueError, msg=name): planmod.make_plan(obj)
+        obj = self.fixture(); obj['app_version'] = '1.0.0-beta'
+        with self.assertRaises(ValueError): planmod.make_plan(obj)
+
+    def test_portable_patch_updates_both_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'src-tauri/src').mkdir(parents=True)
+            lib = 'fn run() {\n    let mut context = tauri::generate_context!();\n}\n'
+            util = ('pub fn get_data_dir(app: &AppHandle, package_name: String) -> std::io::Result<PathBuf> {\n'
+                    '    let data_dir = app.path().config_dir()?.join(package_name);\n'
+                    '    Ok(data_dir)\n}\n'
+                    'pub fn read_last_url(path: &Path) -> std::io::Result<()> { Ok(()) }\n')
+            (root / 'src-tauri/src/lib.rs').write_text(lib)
+            (root / 'src-tauri/src/util.rs').write_text(util)
+            patchmod.patch_files(root)
+            self.assertIn('app_directories_override', (root / 'src-tauri/src/lib.rs').read_text())
+            self.assertIn('root.join("Data").join("WebView")', (root / 'src-tauri/src/util.rs').read_text())
+            with self.assertRaises(RuntimeError): patchmod.patch_files(root)
+
+    def test_patch_fails_closed_on_unknown_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'src-tauri/src').mkdir(parents=True)
+            (root / 'src-tauri/src/lib.rs').write_text('some code')
+            (root / 'src-tauri/src/util.rs').write_text('more code')
+            with self.assertRaises(RuntimeError): patchmod.patch_files(root)
+
+    def test_existing_release_check_distinguishes_error(self):
+        tag='portable-example-v1.0.0-pake3.18.0-r5-123456789abc'
+        zipname='ExamplePortable_1.0.0_Pake3.18.0_r5_win-x64.zip'
+        self.assertFalse(checkmod.classify_return(1, '', 'release not found', tag, zipname))
+        valid={'isDraft':False,'body':'portable-release-publisher:managed:v2',
+               'assets':[{'name':zipname},{'name':'SHA256SUMS.txt'}]}
+        self.assertTrue(checkmod.classify_return(0, json.dumps(valid), '', tag, zipname))
+        with self.assertRaises(RuntimeError): checkmod.classify_return(1,'','HTTP 403',tag,zipname)
+        with self.assertRaises(RuntimeError): checkmod.classify_return(0,'{}','',tag,zipname)
+
+    def test_zip_keeps_nested_empty_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'ExamplePortable'
+            (root/'Data/State/deep/empty').mkdir(parents=True)
+            (root/'README.txt').write_text('hello')
+            output=Path(tmp)/'portable.zip'
+            zipmod.make_zip(root,output)
+            with zipfile.ZipFile(output) as z:
+                self.assertIn('ExamplePortable/Data/State/deep/empty/',z.namelist())
+                self.assertEqual(z.read('ExamplePortable/README.txt'),b'hello')
+
+    def test_pe_x64_check(self):
+        data=bytearray(1024); data[:2]=b'MZ'; struct.pack_into('<I',data,0x3c,128)
+        data[128:132]=b'PE\0\0'; struct.pack_into('<H',data,132,0x8664)
+        self.assertTrue(validmod.is_x64_pe(data))
+        self.assertFalse(validmod.is_x64_pe(b'MZ'))
+        struct.pack_into('<H',data,132,0x14c)
+        self.assertFalse(validmod.is_x64_pe(data))
+
+    def test_tauri_requires_portable_api_and_strict_lock(self):
+        code = (ROOT/'scripts/upgrade-tauri.py').read_text()
+        build = (ROOT/'scripts/build-website.ps1').read_text()
+        self.assertIn('2.12.0', code)
+        self.assertIn('cargo update -p tauri --precise 2.12.0', build)
+        self.assertIn('AppDirectoriesOverride::Root', patchmod.CONTEXT_PATCH)
+        self.assertIn('src-tauri', code)
+
+    def test_yaml_has_no_installer_publishing(self):
+        content=(ROOT/'.github/workflows/build-native.yml').read_text()
+        self.assertIn('vhick/portable-release-publisher@v1.1.1',content)
+        self.assertIn('dry-run: \'true\'',content)
+        self.assertIn('dry-run: \'false\'',content)
+        self.assertNotIn('actions/upload-artifact',content)
+        self.assertNotIn('Portable-Package-Builder',content)
+
+
+if __name__=='__main__': unittest.main()

@@ -83,7 +83,7 @@ if ($SelfTest) {
 
 $headers = @{
   'Accept' = 'application/vnd.github+json'
-  'User-Agent' = 'Pake-Native-Portable-Builder'
+  'User-Agent' = 'Pake-Website-Portable-Builder'
   'X-GitHub-Api-Version' = '2022-11-28'
 }
 if ($env:GH_TOKEN) { $headers['Authorization'] = "Bearer $env:GH_TOKEN" }

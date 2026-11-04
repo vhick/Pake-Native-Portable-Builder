@@ -1,28 +1,48 @@
-# Testing matrix and manual Windows acceptance
+# Tests and acceptance checklist
 
-## Automated in Windows workflow
+## Automated checks supplied (run on GitHub Windows runner)
 
-| Test | Implemented step |
-| --- | --- |
-| Stable tag and SHA match | resolve-upstream self-test + resolve-upstream + fetch-upstream |
-| Release precheck: missing/existing/error | check-existing.ps1 -SelfTest (mocked responses) |
-| Build real CLI | pnpm lock install + cli:build + npm pack |
-| Compile launcher | `dotnet publish -r win-x64 --self-contained true` |
-| PE header + execution | validate.ps1 + `--help`/`--version` |
-| TraceGuard files + empty folders | `--traceguard-selftest` |
-| ZIP integrity and required entries | validate.ps1 with `System.IO.Compression` |
-| Publisher selection and dry-run | shared publisher @v1.1.1 |
+- Python input validation and unique release identity tests.
+- Pake stable tag selection self-test and verified git commit retrieval.
+- PowerShell parse check for all build scripts.
+- Source layout gate: both Rust patches must land exactly once or build fails.
+- Pake CLI build with frozen upstream pnpm lockfile and `--keep-binary` flag.
+- Original Pake output must be a real x64 PE app (not an MSI renamed to EXE).
+- Real executable icon extraction into PortableApps Menu metadata.
+- ZIP integrity, independent packaging and empty directory entries.
+- Shared release publisher `dry-run:true` before `dry-run:false`.
 
-## Manual checks (not claimed as passing)
+**These tests are included in the kit but have not yet run on a GitHub Windows runner in this conversation.** The current build has only passed local Python tests and YAML/ZIP checks.
 
-1. Extract the ZIP on a Windows 10/11 x64 system to `D:\PakePortable` and execute `PakePortable.exe --version`.
-2. Run `PakePortable.exe https://example.com --name Example` on a PC with Rust and MSVC; check `Data\Output` for its real MSI output.
-3. Check that `Data\Profile`, `Data\Temp`, `Data\Cache` contain CLI-managed data. Search external APPDATA and LocalAppData for new Pake-related writes using a Windows tracing tool.
-4. Check unrelated pre-existing `%APPDATA%`, `%LOCALAPPDATA%`, `%PROGRAMDATA%` and Rust configurations remain untouched.
-5. Create nested empty directories in Data, run `PakePortable.exe --help`, and verify `Data\TraceGuard\manifest.json` lists them.
-6. Copy whole folder to another drive and run `PakePortable.exe --version`.
-7. Place a sentinel file in `Data`, replace only App, EXE and source metadata during a version upgrade, verify sentinel survives. Repeat with downgrade.
-8. Kill a build unexpectedly, then run `PakePortable.exe --help` to check interrupted-session recovery. Check cleanup errors rather than removing host data manually.
-9. If a generated Windows Tauri app must also become portable, audit and package that app in a **separate** builder with its own WebView2 and TraceGuard implementation.
+## Manual Windows test plan (mandatory before declaring proven portable)
 
-No installer was requested in NATIVE mode; installation/PAF validation and PortableApps Menu discovery are not applicable.
+1. Download the published ZIP from GitHub Releases and extract it, not the repository's source-code archive.
+2. In `AppNamePortable`, double-click `AppNamePortable.exe`. Confirm the website opens in a graphical window.
+3. Sign in if the site allows embedded browser authentication, browse a few pages, then **quit** (not just minimize to tray).
+4. Inspect `AppNamePortable/Data/WebView` for WebView2 profile data and `Data/State` for plugin/state data.
+5. Check whether the intended app created new data under `%APPDATA%`, `%LOCALAPPDATA%`, `%LOCALAPPDATA%\Low`, or `%PROGRAMDATA%`, comparing the **before** and **after** snapshots. Do not delete shared or preexisting files.
+6. Create an empty directory at `Data/State/test-empty` and a nested empty tree at `Data/WebView/test-empty/a/b`. Quit, copy the entire folder to another drive and verify these directories survive.
+7. Relaunch from the other drive; verify browsing state/session persists and check for new external app-owned traces.
+8. Close, back up `Data`, and test updating EXE/App/Other from a new ZIP **without overwriting Data**.
+9. Test rolling back with a backed-up copy of the newer `Data`, not by replacing profiles with old defaults.
+10. Put the extracted folder under `PortableApps\AppNamePortable` and refresh PortableApps Menu; check icon, name and launcher execution.
+11. Check whether any website feature requires browser access that WebView2 disallows (OAuth sign-in, browser extensions, custom protocol integrations).
+12. On machines without Edge WebView2 Runtime, confirm that runtime is separately available and document failures; the app is not fully standalone from Windows components.
+
+## Failure triage
+
+- **Missing EXE**: check the Pake `--keep-binary` build step and its output filename; source UI/CLI may have changed.
+- **Rust compilation failed**: check the patch source-compatibility error, pinned upstream version and Windows toolchain before modifying portable code.
+- **App opens but profile writes to host**: do not delete host data. Collect actual paths, parent process, pre-launch snapshots and relevant app logs; fix the source path redirect.
+- **MSI present during the build**: expected intermediate from upstream Pake, not published. The GitHub Release should contain **only a ZIP plus publisher checksums**.
+- **No download after green workflow**: if `publish:false`, nothing is uploaded by design. Run again with `publish:true`.
+- **Old release skipped**: the same app configuration and Pake version already exists; change app version or an option for a distinct release if needed.
+
+
+**Tauri version:** Pake V3.18.0 uses Tauri 2.10.2 in Cargo.lock. The
+source-level portable profile API requires Tauri **2.12.0** (released
+September 2026). This builder updates the temporary clone's tauri Rust
+dependency and checks the resulting lockfile. A dependency incompatibility
+fails the build rather than publishing a profile-writing executable. This
+specific Rust dependency upgrade has not yet been verified by a full Windows
+build. Reference: https://tauri.app/release/tauri/v2.12.0/

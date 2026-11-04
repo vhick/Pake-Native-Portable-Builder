@@ -1,7 +1,7 @@
 work/
 release/
-*.user
-.vs/
-.idea/
+*.log
 __pycache__/
+.pytest_cache/
 *.pyc
+.DS_Store
