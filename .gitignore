@@ -3,3 +3,5 @@ release/
 *.user
 .vs/
 .idea/
+__pycache__/
+*.pyc

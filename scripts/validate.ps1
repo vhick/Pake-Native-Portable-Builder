@@ -53,7 +53,7 @@ Write-Host 'Verified repeated runs, nested empty directories, crash marker, and 
 Remove-Item -Recurse -Force -LiteralPath (Join-Path $stage 'Data')
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'Data') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $root 'release') | Out-Null
-$name="PakePortable_$env:PAKE_VERSION"+'_Native-r1_win-x64.zip'
+$name="PakePortable_$env:PAKE_VERSION"+'_Native-r2_win-x64.zip'
 $zip=Join-Path $root "release/$name"
 if(Test-Path $zip){throw "Output collision: $zip"}
 Compress-Archive -LiteralPath $stage -DestinationPath $zip -CompressionLevel Optimal

@@ -5,10 +5,11 @@ $root=(Resolve-Path .).Path
 $stage=Join-Path $root 'work/stage/PakePortable'
 New-Item -ItemType Directory -Force -Path $stage, (Join-Path $stage 'App/Node'), (Join-Path $stage 'App/Cli'), (Join-Path $stage 'App/Tools'), (Join-Path $stage 'Data') | Out-Null
 $pkg=Get-Content (Join-Path $up 'package.json') -Raw | ConvertFrom-Json
-if($pkg.packageManager -notmatch '^pnpm@(\d+\.\d+\.\d+)$'){
+$packageManagerMatch = [regex]::Match([string]$pkg.packageManager, '^pnpm@(\d+\.\d+\.\d+)$')
+if (-not $packageManagerMatch.Success) {
   throw "Unsupported upstream package manager '$($pkg.packageManager)'; this builder requires an exact pnpm semver"
 }
-$pnpmVersion=$Matches[1]
+$pnpmVersion = $packageManagerMatch.Groups[1].Value
 # npm CLI checks registry integrity; the upstream pnpm lockfile is enforced on the source build.
 npm install --global "pnpm@$pnpmVersion" --no-audit --no-fund
 if($LASTEXITCODE -ne 0){throw 'Cannot install pinned pnpm'}
@@ -49,7 +50,7 @@ Copy-Item -Path (Join-Path (Split-Path $node -Parent) 'node_modules/npm') -Desti
 # Stage exact upstream source license and exception for redistribution notice.
 Copy-Item -LiteralPath (Join-Path $up 'LICENSE') -Destination (Join-Path $stage 'LICENSE-UPSTREAM.txt')
 Copy-Item -LiteralPath (Join-Path $up 'LICENSE-EXCEPTION') -Destination (Join-Path $stage 'LICENSE-EXCEPTION.txt')
-$provenance=[ordered]@{ upstream='https://github.com/tw93/Pake'; tag=$env:PAKE_TAG; version=$env:PAKE_VERSION; commit=$env:PAKE_COMMIT; builder='r1'; node=( & $nodeExe --version); pnpm=$pnpmVersion; source='upstream git tag checked against GitHub release API' }
+$provenance=[ordered]@{ upstream='https://github.com/tw93/Pake'; tag=$env:PAKE_TAG; version=$env:PAKE_VERSION; commit=$env:PAKE_COMMIT; builder='r2'; node=( & $nodeExe --version); pnpm=$pnpmVersion; source='upstream git tag checked against GitHub release API' }
 $provenance|ConvertTo-Json -Depth 4|Set-Content (Join-Path $stage 'SOURCE.json') -Encoding utf8
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'Data/Output') | Out-Null
 Write-Host "Production CLI staged from $tar"

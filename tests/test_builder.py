@@ -37,6 +37,19 @@ class BuilderStructure(unittest.TestCase):
         self.assertIn('<OutputType>Exe</OutputType>', project)
         self.assertIn('<PublishSingleFile>true</PublishSingleFile>', project)
         self.assertNotIn('ScriptToExe', project)
+    def test_powershell_string_interpolation_regression(self):
+        """Catch accidental '$tag:' interpolations before GitHub's actual PS parser check.
+
+        PowerShell scopes like $env:FOO and $script:name are deliberate exceptions.
+        This is a source lint test, not a replacement for the PowerShell parser.
+        """
+        allowed_scopes = {'env', 'script', 'global', 'local', 'private', 'using', 'function', 'variable'}
+        for script in (ROOT / 'scripts').glob('*.ps1'):
+            source = script.read_text(encoding='utf-8')
+            for match in re.finditer(r'(?<![`$])\$([A-Za-z_][A-Za-z0-9_]*):', source):
+                self.assertIn(match.group(1).lower(), allowed_scopes,
+                              f'{script.name}:{source.count(chr(10), 0, match.start())+1}: ambiguous {match.group()}')
+
     def test_all_script_files_are_nonempty(self):
         for script in (ROOT / 'scripts').glob('*.ps1'):
             self.assertGreater(script.stat().st_size, 100)
