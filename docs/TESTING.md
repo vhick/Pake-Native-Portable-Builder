@@ -51,3 +51,7 @@ build. Reference: https://tauri.app/release/tauri/v2.12.0/
 ## r6 WiX dependency preflight
 
 The GitHub runner validates `wix311-binaries.zip` against the known upstream-release SHA-256 and checks that `candle.exe` and `light.exe` were extracted into `work/tools/wix311`. No WiX installer is executed. This is a build prerequisite only: the final release ZIP must not contain an MSI or WiX binaries.
+
+
+### r7 dependency alignment
+Before Pake generates a website app, verify that its temporary Node packages are `@tauri-apps/api` 2.12.3 and `@tauri-apps/cli` 2.12.2, and its Rust `tauri` crate is 2.12.0. The build fails closed if they disagree.

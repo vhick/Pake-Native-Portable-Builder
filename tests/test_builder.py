@@ -80,8 +80,8 @@ class BuilderTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): patchmod.patch_files(root)
 
     def test_existing_release_check_distinguishes_error(self):
-        tag='portable-example-v1.0.0-pake3.18.0-r6-123456789abc'
-        zipname='ExamplePortable_1.0.0_Pake3.18.0_r6_win-x64.zip'
+        tag='portable-example-v1.0.0-pake3.18.0-r7-123456789abc'
+        zipname='ExamplePortable_1.0.0_Pake3.18.0_r7_win-x64.zip'
         self.assertFalse(checkmod.classify_return(1, '', 'release not found', tag, zipname))
         valid={'isDraft':False,'body':'portable-release-publisher:managed:v2',
                'assets':[{'name':zipname},{'name':'SHA256SUMS.txt'}]}
@@ -115,6 +115,44 @@ class BuilderTests(unittest.TestCase):
         self.assertIn('cargo update -p tauri --precise 2.12.0', build)
         self.assertIn('AppDirectoriesOverride::Root', patchmod.CONTEXT_PATCH)
         self.assertIn('src-tauri', code)
+
+    def test_tauri_js_rewrite_and_installed_versions(self):
+        up = module('upgrade-tauri')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'package.json').write_text(json.dumps({
+                'name': 'pake-cli',
+                'dependencies': {'@tauri-apps/api': '~2.10.1',
+                                 '@tauri-apps/cli': '^2.10.0',
+                                 'other-lib': '1.0.0'},
+                'scripts': {'build': 'tauri build'},
+            }), encoding='utf-8')
+            up.prepare_javascript(root)
+            manifest = json.loads((root / 'package.json').read_text())
+            self.assertEqual(manifest['dependencies']['@tauri-apps/api'], '2.12.3')
+            self.assertEqual(manifest['dependencies']['@tauri-apps/cli'], '2.12.2')
+            self.assertEqual(manifest['dependencies']['other-lib'], '1.0.0')
+            for name, version in [('api', '2.12.3'), ('cli', '2.12.2')]:
+                folder = root / 'node_modules/@tauri-apps' / name
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / 'package.json').write_text(json.dumps({'version': version}))
+            up.verify_javascript(root)
+            with self.assertRaises(RuntimeError): up.prepare_javascript(root)
+            (root / 'node_modules/@tauri-apps/api/package.json').write_text(json.dumps({'version':'2.10.1'}))
+            with self.assertRaisesRegex(RuntimeError, 'Installed @tauri-apps/api'):
+                up.verify_javascript(root)
+
+    def test_tauri_js_verification_precedes_application_build(self):
+        build = (ROOT/'scripts/build-website.ps1').read_text(encoding='utf-8')
+        self.assertIn('pnpm install --no-frozen-lockfile', build)
+        self.assertIn('pnpm install --frozen-lockfile', build)
+        self.assertLess(build.index('--prepare-js'), build.index('pnpm run cli:build'))
+        self.assertLess(build.index('--verify-js'), build.index('node dist/cli.js @cliArgs'))
+        self.assertIn('cargo update -p tauri --precise 2.12.0', build)
+        # Upstream Pake 3.18.0 is known to lock API 2.10.1 and Rust 2.10.2.
+        source = (ROOT / 'scripts/upgrade-tauri.py').read_text(encoding='utf-8')
+        self.assertIn('ORIGINAL_JS_API', source)
+        self.assertIn('JS_API_TARGET', source)
 
     def test_wix_uses_pinned_portable_binaries_not_quiet_install(self):
         code = (ROOT / 'scripts/ensure-wix.ps1').read_text(encoding='utf-8')

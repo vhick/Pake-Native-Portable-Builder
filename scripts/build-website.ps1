@@ -15,6 +15,18 @@ Push-Location $upstream
 try {
     & pnpm install --frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw 'Upstream dependency installation failed' }
+    # Pake 3.18.0 installs @tauri-apps/api 2.10.1 and CLI 2.10.0.
+    # The Rust 2.12.0 portability patch requires matching JS packages.
+    # Change only this disposable fetched source, then regenerate pnpm-lock.yaml
+    # using pnpm itself instead of editing the lockfile by hand.
+    & python (Join-Path $root 'scripts/upgrade-tauri.py') $upstream --prepare-js
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot align upstream Tauri JavaScript package versions' }
+    & pnpm install --no-frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw 'Installing aligned Tauri JavaScript packages failed' }
+    & pnpm install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw 'Regenerated Tauri JavaScript dependency lockfile is invalid' }
+    & python (Join-Path $root 'scripts/upgrade-tauri.py') $upstream --verify-js
+    if ($LASTEXITCODE -ne 0) { throw 'Installed Tauri JS versions do not match Rust 2.12.x; refusing build' }
     & pnpm run cli:build
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath 'dist/cli.js')) { throw 'Building Pake CLI failed' }
     # Tauri's source-level appDirectoriesOverride API was introduced in 2.12.0.
