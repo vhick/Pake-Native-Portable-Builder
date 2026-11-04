@@ -1,0 +1,103 @@
+name: Build Pake Native Portable
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Optional stable Pake tag (blank = latest stable release)'
+        required: false
+        default: ''
+        type: string
+      publish:
+        description: 'Publish only after validation; false = build/validate only'
+        required: true
+        type: boolean
+        default: true
+permissions:
+  contents: write
+concurrency:
+  group: pake-native-release
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Native x64 portable build
+    runs-on: windows-latest
+    timeout-minutes: 80
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse all PowerShell scripts before downloading dependencies
+        run: |
+          $errorsFound = 0
+          Get-ChildItem -Path scripts -Filter '*.ps1' | ForEach-Object {
+            $tokens=$null; $parseErrors=$null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$parseErrors)
+            foreach($problem in $parseErrors) { Write-Host "$($_.Name): $problem"; $errorsFound++ }
+          }
+          if($errorsFound -gt 0){throw "PowerShell parsing failed: $errorsFound errors"}
+      - name: Resolve stable upstream tag and commit
+        id: upstream
+        env:
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/resolve-upstream.ps1
+      - name: Skip unchanged managed release
+        id: precheck
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
+          DO_PUBLISH: ${{ inputs.publish }}
+        run: ./scripts/check-existing.ps1
+      - uses: actions/setup-node@v4
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        with:
+          node-version: '22'
+      - uses: actions/setup-dotnet@v4
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        with:
+          dotnet-version: '8.0.x'
+      - name: Fetch verified upstream tag
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        run: ./scripts/fetch-upstream.ps1
+        env:
+          PAKE_TAG: ${{ steps.upstream.outputs.tag }}
+          PAKE_COMMIT: ${{ steps.upstream.outputs.commit }}
+      - name: Build real upstream CLI and install portable dependencies
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        run: ./scripts/build-cli.ps1
+        env:
+          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
+          PAKE_TAG: ${{ steps.upstream.outputs.tag }}
+          PAKE_COMMIT: ${{ steps.upstream.outputs.commit }}
+      - name: Compile Windows portable launcher
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        run: ./scripts/build-launcher.ps1
+      - name: Validate executable, runtime and independent ZIP
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        id: verify
+        run: ./scripts/validate.ps1
+        env:
+          PAKE_VERSION: ${{ steps.upstream.outputs.version }}
+      - name: Preview shared release publisher (no uploads)
+        if: ${{ steps.precheck.outputs.skip != 'true' }}
+        uses: vhick/portable-release-publisher@v1.1.1
+        with:
+          files: release/*.zip
+          tag: portable-v${{ steps.upstream.outputs.version }}-native-r1
+          tag-prefix: portable-
+          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r1
+          keep-releases: '3'
+          prune: 'false'
+          dry-run: 'true'
+      - name: Publish validated ZIP through shared publisher
+        if: ${{ inputs.publish && steps.precheck.outputs.skip != 'true' }}
+        uses: vhick/portable-release-publisher@v1.1.1
+        with:
+          files: release/*.zip
+          tag: portable-v${{ steps.upstream.outputs.version }}-native-r1
+          tag-prefix: portable-
+          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r1
+          keep-releases: '3'
+          prune: 'false'
+          dry-run: 'false'
