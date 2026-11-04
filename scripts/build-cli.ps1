@@ -50,7 +50,7 @@ Copy-Item -Path (Join-Path (Split-Path $node -Parent) 'node_modules/npm') -Desti
 # Stage exact upstream source license and exception for redistribution notice.
 Copy-Item -LiteralPath (Join-Path $up 'LICENSE') -Destination (Join-Path $stage 'LICENSE-UPSTREAM.txt')
 Copy-Item -LiteralPath (Join-Path $up 'LICENSE-EXCEPTION') -Destination (Join-Path $stage 'LICENSE-EXCEPTION.txt')
-$provenance=[ordered]@{ upstream='https://github.com/tw93/Pake'; tag=$env:PAKE_TAG; version=$env:PAKE_VERSION; commit=$env:PAKE_COMMIT; builder='r2'; node=( & $nodeExe --version); pnpm=$pnpmVersion; source='upstream git tag checked against GitHub release API' }
+$provenance=[ordered]@{ upstream='https://github.com/tw93/Pake'; tag=$env:PAKE_TAG; version=$env:PAKE_VERSION; commit=$env:PAKE_COMMIT; builder='r3'; node=( & $nodeExe --version); pnpm=$pnpmVersion; source='upstream git tag checked against GitHub release API' }
 $provenance|ConvertTo-Json -Depth 4|Set-Content (Join-Path $stage 'SOURCE.json') -Encoding utf8
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'Data/Output') | Out-Null
 Write-Host "Production CLI staged from $tar"

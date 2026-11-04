@@ -1,7 +1,7 @@
-# Pake Native Portable Builder Kit (r2)
+# Pake Native Portable Builder Kit (r3)
 
 **Upstream:** https://github.com/tw93/Pake  
-**Output:** independently extractable `PakePortable_<upstream-version>_Native-r2_win-x64.zip`  
+**Output:** independently extractable `PakePortable_<upstream-version>_Native-r3_win-x64.zip`  
 **Selected mode:** `NATIVE` (not `PORTABLEAPPS` or `BOTH`)  
 **Publishing:** `vhick/portable-release-publisher@v1.1.1`
 
@@ -11,21 +11,23 @@ Pake is **a Node.js CLI that compiles web pages into separate Tauri desktop apps
 
 The ZIP contains a genuine compiled `.exe` front end to the actual official CLI, bundled Node 22 runtime and upstream-declared exact pnpm version. `PakePortable.exe --help` and `--version` need no global Pake/Node install. **Building a web app needs a working host Rust toolchain (>=1.85) plus MSVC C++ build tools**, as specified by Pake. These can write compiler caches outside the ZIP; bundling a complete Windows build toolchain would substantially enlarge the package and is **not** implemented. Do not claim fully isolated native application builds on arbitrary clean PCs.
 
-## r2 fix (GitHub Actions parse failure)
+## r3 fix (GitHub Actions release-resolution failure)
 
-GitHub Actions log `logs_113413259753.zip` from the original r1 build failed at the early script parsing step, before fetching or building upstream. The r2 builder fixes the invalid PowerShell interpolation in `scripts/check-existing.ps1` by using `${tag}:` and adds a source-level regression check. It also avoids ambiguous `$Matches` automatic-variable behavior when parsing the upstream pinned pnpm version. No application portability, TraceGuard, or release publisher behaviors were intentionally changed.
+The r2 GitHub Actions run (`logs_113419926172.zip`) passed PowerShell parsing but failed at release resolution: `No eligible stable upstream release`. Pake **does** have a published stable `V3.17.6` release. Root cause: `@(Invoke-RestMethod ...)` can wrap a GitHub JSON array as a single nested object, so PowerShell did not enumerate individual release records before filtering. This behavior is documented by Microsoft.
 
-**Verification:** source-structure tests and ZIP integrity were tested locally. The Windows PowerShell syntax parser, .NET launcher compilation and actual Pake build still run on the Windows GitHub runner; r2 has not yet been confirmed as a successful Windows build.
+r3 assigns the REST result to a variable, verifies its array type, and explicitly iterates individual releases. It also adds a **preflight PowerShell self-test** for stable version sorting, drafts, prereleases and explicit version selection, with better diagnostics if GitHub's response changes. It preserves the previous r2 PowerShell interpolation fix.
+
+r3 uses a new immutable release namespace (`native-r3`). It does not change the native launcher, TraceGuard, portable Data strategy, or shared publisher integration. **No Windows build has been completed in this authoring environment.**
 
 ## Run it from GitHub Desktop (beginner guide)
 
 1. On github.com select **New repository** and name it `Pake-Native-Portable-Builder`. Choose **Public** or **Private**. Do **not** check `Add a README` if you want a clean empty repository. Create it.
 2. Open GitHub Desktop: **File > Clone repository**, select this new repository, choose a local folder and click **Clone**.
 3. Extract this kit ZIP. **Copy the kit's contents** (including the hidden `.github` folder) directly into your cloned repository. Do not add an extra nesting folder.
-4. In GitHub Desktop, review the files, type `Add Pake native portable builder r2`, click **Commit to main**, then **Push origin**.
+4. In GitHub Desktop, review the files, type `Fix Pake release selection r3`, click **Commit to main**, then **Push origin**.
 5. On github.com open your new repo > **Settings > Actions > General**. Allow use of GitHub Actions; under **Workflow permissions**, give read/write permissions if the publisher cannot create releases (the workflow itself requests `contents: write`). For a private repository, ensure allowed action policies permit the two shared public actions.
 6. Open **Actions > Build Pake Native Portable > Run workflow**. Leave `upstream_tag` blank for the latest stable version. Set `publish` to true to create a release; false validates without publishing.
-7. On a successful run, open the repository **Releases** page and download the `PakePortable_*_Native-r2_win-x64.zip` and `SHA256SUMS.txt`.
+7. On a successful run, open the repository **Releases** page and download the `PakePortable_*_Native-r3_win-x64.zip` and `SHA256SUMS.txt`.
 8. Extract ZIP to a writable folder, e.g. `D:\PortableTools\PakePortable\` (avoid nesting `PakePortable\PakePortable\`). Double-click `PakePortable.exe --help` in Terminal, or use `PakePortable.exe https://example.com --name Example` in a terminal opened in that folder.
 9. Built web-app installers will go to `PakePortable\Data\Output`. The first web-app build needs Rust + Visual Studio C++ build tools. Pake itself may download dependencies.
 10. Upgrade by extracting the new ZIP and replacing **only** `PakePortable.exe`, `App`, `SOURCE.json`, `LICENSE-UPSTREAM.txt` and `LICENSE-EXCEPTION.txt`. **Never overwrite/delete `Data`**. Keep an offline backup first. Do not downgrade running compiled web-apps' own profiles based on this ZIP.
@@ -68,7 +70,7 @@ TraceGuard creates a crash marker before launching Node and updates a manifest a
 - **PakePortable.exe says Rust or Visual Studio C++ build tools missing:** install official stable Rust (`rustup`, `stable-x86_64-pc-windows-msvc`) and Visual Studio Build Tools with Desktop development with C++. Then reopen your terminal.
 - **Build works but new desktop app leaves WebView2 folders:** those are created by the **generated Tauri app**, not the Pake CLI builder. It needs a separate application-specific portable launcher and storage override.
 - **Permission or data issues:** extract into a writable non-protected directory; do not run it under Program Files. Check `Data\TraceGuard` and `Data\Profile`.
-- **Rebuild produces an existing release-tag mismatch:** bump the builder revision consistently in filename and release tag (e.g. native-r2) rather than overwrite an immutable release.
+- **Rebuild produces an existing release-tag mismatch:** bump the builder revision consistently in filename and release tag (e.g. native-r3) rather than overwrite an immutable release.
 - **Publisher cannot find ZIP:** inspect the `Validate executable, runtime and independent ZIP` step. The publisher expects `release/*.zip`, not `*.exe`.
 - **Node native module errors:** Pake CLI dependencies may have changed; inspect the upstream `package.json` and pinned package manager version before increasing the builder revision.
 

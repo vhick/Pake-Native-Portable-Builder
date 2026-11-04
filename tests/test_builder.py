@@ -50,6 +50,17 @@ class BuilderStructure(unittest.TestCase):
                 self.assertIn(match.group(1).lower(), allowed_scopes,
                               f'{script.name}:{source.count(chr(10), 0, match.start())+1}: ambiguous {match.group()}')
 
+    def test_release_resolver_enumeration_regression(self):
+        code = (ROOT / 'scripts/resolve-upstream.ps1').read_text()
+        workflow = (ROOT / '.github/workflows/build-native.yml').read_text()
+        self.assertNotRegex(code, r'(?m)^\s*\$[A-Za-z_]\w*\s*=\s*@\(Invoke-RestMethod')
+        self.assertIn('[object[]]$releases = $releaseResponse', code)
+        self.assertIn('foreach ($release in $Releases)', code)
+        self.assertIn('if ($SelfTest)', code)
+        self.assertIn('V3.17.6', code)
+        self.assertIn('./scripts/resolve-upstream.ps1 -SelfTest', workflow)
+        self.assertIn('native-r3', workflow)
+
     def test_all_script_files_are_nonempty(self):
         for script in (ROOT / 'scripts').glob('*.ps1'):
             self.assertGreater(script.stat().st_size, 100)

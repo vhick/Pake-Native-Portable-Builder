@@ -36,6 +36,8 @@ jobs:
             foreach($problem in $parseErrors) { Write-Host "$($_.Name): $problem"; $errorsFound++ }
           }
           if($errorsFound -gt 0){throw "PowerShell parsing failed: $errorsFound errors"}
+      - name: Test stable release selection against local API fixtures
+        run: ./scripts/resolve-upstream.ps1 -SelfTest
       - name: Resolve stable upstream tag and commit
         id: upstream
         env:
@@ -84,9 +86,9 @@ jobs:
         uses: vhick/portable-release-publisher@v1.1.1
         with:
           files: release/*.zip
-          tag: portable-v${{ steps.upstream.outputs.version }}-native-r2
+          tag: portable-v${{ steps.upstream.outputs.version }}-native-r3
           tag-prefix: portable-
-          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r2
+          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r3
           keep-releases: '3'
           prune: 'false'
           dry-run: 'true'
@@ -95,9 +97,9 @@ jobs:
         uses: vhick/portable-release-publisher@v1.1.1
         with:
           files: release/*.zip
-          tag: portable-v${{ steps.upstream.outputs.version }}-native-r2
+          tag: portable-v${{ steps.upstream.outputs.version }}-native-r3
           tag-prefix: portable-
-          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r2
+          release-title: Pake ${{ steps.upstream.outputs.version }} Native Portable r3
           keep-releases: '3'
           prune: 'false'
           dry-run: 'false'
