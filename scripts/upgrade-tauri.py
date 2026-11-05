@@ -64,8 +64,23 @@ def verify_resolved_windows(root: Path):
     """
     cmd = ['cargo', 'metadata', '--format-version', '1', '--locked',
            '--manifest-path', str(root / 'src-tauri/Cargo.toml')]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    metadata = json.loads(result.stdout)
+    # Cargo emits UTF-8 JSON even on Windows, but Python's text=True uses
+    # the active Windows locale (often cp1252) for subprocess pipes.  Non-ASCII
+    # metadata can kill the pipe reader and make stdout become None.
+    # Capture bytes first, then decode JSON explicitly.  Never use errors=ignore
+    # on the JSON payload: silently corrupted metadata must fail validation.
+    try:
+        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or b'').decode('utf-8', errors='replace')
+        raise RuntimeError(f'cargo metadata exited {exc.returncode}: {details[-2000:]}') from exc
+    if not isinstance(result.stdout, bytes):
+        raise RuntimeError('Expected binary stdout from cargo metadata, not text')
+    try:
+        metadata = json.loads(result.stdout.decode('utf-8-sig'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError('cargo metadata did not return valid UTF-8 JSON') from exc
     packages = {pkg['id']: pkg for pkg in metadata['packages']}
     target_manifest = (root / 'src-tauri/Cargo.toml').resolve()
     matches = [pkg for pkg in metadata['packages']

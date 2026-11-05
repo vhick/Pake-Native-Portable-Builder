@@ -152,6 +152,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: work/upstream/src-tauri -> target
+          # Intentional: preserve r8 Rust cache compatibility; dependency pins are unchanged.
           shared-key: pake-website-win-x64-r8
       # WiX is needed only because upstream Pake bundles a throwaway MSI as it
       # retains the real EXE; use hash-pinned binaries, not machine-wide setup.
@@ -177,7 +178,7 @@ jobs:
         with:
           files: release/*.zip
           tag: ${{ steps.plan.outputs.release_tag }}
-          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r8)
+          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r9)
           tag-prefix: portable-
           keep-releases: '3'
           prune: 'false'
@@ -188,7 +189,7 @@ jobs:
         with:
           files: release/*.zip
           tag: ${{ steps.plan.outputs.release_tag }}
-          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r8)
+          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r9)
           tag-prefix: portable-
           keep-releases: '3'
           prune: 'false'

@@ -81,8 +81,8 @@ class BuilderTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): patchmod.patch_files(root)
 
     def test_existing_release_check_distinguishes_error(self):
-        tag='portable-example-v1.0.0-pake3.18.0-r8-123456789abc'
-        zipname='ExamplePortable_1.0.0_Pake3.18.0_r8_win-x64.zip'
+        tag='portable-example-v1.0.0-pake3.18.0-r9-123456789abc'
+        zipname='ExamplePortable_1.0.0_Pake3.18.0_r9_win-x64.zip'
         self.assertFalse(checkmod.classify_return(1, '', 'release not found', tag, zipname))
         valid={'isDraft':False,'body':'portable-release-publisher:managed:v2',
                'assets':[{'name':zipname},{'name':'SHA256SUMS.txt'}]}
@@ -161,18 +161,73 @@ class BuilderTests(unittest.TestCase):
                 {'name':'windows_core','pkg':'win-new'},
                 {'name':'webview2_com','pkg':'wv-new'},
             ]}]}}
-            with mock.patch.object(up.subprocess, 'run', return_value=mock.Mock(stdout=json.dumps(meta))) as run:
+            with mock.patch.object(up.subprocess, 'run', return_value=mock.Mock(stdout=json.dumps(meta).encode('utf-8'))) as run:
                 up.verify_resolved_windows(root)
                 meta['resolve']['nodes'][0]['deps'][0]['pkg']='win-old-transitive'
-                run.return_value.stdout = json.dumps(meta)
+                run.return_value.stdout = json.dumps(meta).encode('utf-8')
                 with self.assertRaisesRegex(RuntimeError, 'windows_core'):
+                    up.verify_resolved_windows(root)
+
+    def test_r9_stage_and_publish_consistently_use_builder_revision(self):
+        stage=(ROOT/'scripts/stage-package.ps1').read_text(encoding='utf-8')
+        workflow=(ROOT/'.github/workflows/build-native.yml').read_text(encoding='utf-8')
+        self.assertIn('DisplayVersion=$($plan.version) Portable $($plan.builderRevision)', stage)
+        self.assertIn('builder = [string]$plan.builderRevision', stage)
+        self.assertEqual(workflow.count('${{ steps.upstream.outputs.version }} r9)'), 2)
+        self.assertEqual(planmod.BUILDER_REVISION, 'r9')
+
+    def test_r9_cargo_metadata_bytes_utf8_not_windows_cp1252(self):
+        up = module('upgrade-tauri')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / 'src-tauri/Cargo.toml'
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text('[package]\nname="pake"\nversion="3.18.0"\n')
+            # Non-ASCII (including bytes that fail to decode in cp1252) is
+            # legitimate JSON and must not crash on GitHub's Windows runner.
+            meta = {
+                'packages': [
+                    {'name': 'pake', 'id': 'pake-id',
+                     'manifest_path': str(manifest), 'version': '3.18.0',
+                     'description': 'Pake 🚀 – test'},
+                    {'name': 'windows-core', 'id': 'core', 'version': '0.62.2'},
+                    {'name': 'webview2-com', 'id': 'web', 'version': '0.39.1'},
+                ],
+                'resolve': {'nodes': [{'id': 'pake-id', 'deps': [
+                    {'name': 'windows_core', 'pkg': 'core'},
+                    {'name': 'webview2_com', 'pkg': 'web'},
+                ]}]},
+            }
+            payload = json.dumps(meta, ensure_ascii=False).encode('utf-8')
+            with mock.patch.object(up.subprocess, 'run',
+                                   return_value=mock.Mock(stdout=payload)) as run:
+                up.verify_resolved_windows(root)
+                kwargs = run.call_args.kwargs
+                self.assertEqual(kwargs['stdout'], up.subprocess.PIPE)
+                self.assertEqual(kwargs['stderr'], up.subprocess.PIPE)
+                self.assertNotIn('text', kwargs)
+                self.assertNotIn('encoding', kwargs)
+
+    def test_r9_cargo_metadata_bad_encoding_and_error_have_clear_diagnostics(self):
+        up = module('upgrade-tauri')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'src-tauri').mkdir()
+            with mock.patch.object(up.subprocess, 'run',
+                                   return_value=mock.Mock(stdout=b'\x8f broken JSON')):
+                with self.assertRaisesRegex(RuntimeError, 'valid UTF-8 JSON'):
+                    up.verify_resolved_windows(root)
+            err=up.subprocess.CalledProcessError(101, ['cargo', 'metadata'],
+                                                stderr='cargo: café'.encode('utf-8'))
+            with mock.patch.object(up.subprocess, 'run', side_effect=err):
+                with self.assertRaisesRegex(RuntimeError, 'cargo metadata exited 101: cargo: café'):
                     up.verify_resolved_windows(root)
 
     def test_r8_windows_preflight_is_before_portability_patch_and_compile(self):
         text=(ROOT/'scripts/build-website.ps1').read_text(encoding='utf-8')
         self.assertLess(text.index('--verify-resolved-windows'), text.index('scripts/patch-portability.py'))
         self.assertLess(text.index('--verify-resolved-windows'), text.index('node dist/cli.js @cliArgs'))
-        self.assertEqual(planmod.BUILDER_REVISION, 'r8')
+        self.assertEqual(planmod.BUILDER_REVISION, 'r9')
 
     def test_tauri_js_rewrite_and_installed_versions(self):
         up = module('upgrade-tauri')
