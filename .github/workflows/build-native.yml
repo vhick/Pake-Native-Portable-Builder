@@ -152,7 +152,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: work/upstream/src-tauri -> target
-          shared-key: pake-website-win-x64-r7
+          shared-key: pake-website-win-x64-r8
       # WiX is needed only because upstream Pake bundles a throwaway MSI as it
       # retains the real EXE; use hash-pinned binaries, not machine-wide setup.
       - name: Prepare verified portable WiX binaries for temporary upstream MSI
@@ -177,7 +177,7 @@ jobs:
         with:
           files: release/*.zip
           tag: ${{ steps.plan.outputs.release_tag }}
-          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r7)
+          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r8)
           tag-prefix: portable-
           keep-releases: '3'
           prune: 'false'
@@ -188,7 +188,7 @@ jobs:
         with:
           files: release/*.zip
           tag: ${{ steps.plan.outputs.release_tag }}
-          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r7)
+          release-title: ${{ inputs.app_name }} Portable ${{ inputs.app_version }} (Pake ${{ steps.upstream.outputs.version }} r8)
           tag-prefix: portable-
           keep-releases: '3'
           prune: 'false'

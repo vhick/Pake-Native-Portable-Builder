@@ -64,7 +64,7 @@ CommercialUse=true
 
 [Version]
 PackageVersion=$packageVersion
-DisplayVersion=$($plan.version) Portable r7
+DisplayVersion=$($plan.version) Portable r8
 
 [Dependencies]
 Requires64bitOS=yes
@@ -88,7 +88,7 @@ $manifest = [ordered]@{
     pakeTag = [string]$env:PAKE_TAG
     pakeCommit = [string]$env:PAKE_COMMIT
     architecture = 'windows-x64-msvc'
-    builder = 'r7'
+    builder = 'r8'
     generatedFrom = 'Pake CLI --keep-binary; installer excluded'
     exe = [string]$plan.exe
     storage = @('Data/State','Data/WebView')

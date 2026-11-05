@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Prepare ephemeral Pake source to support documented Tauri 2.12 portable API.
 
-Pake V3.18.0 pins tauri 2.10.x in Cargo.lock; appDirectoriesOverride
-first shipped in 2.12.0. These checks fail closed if the upstream
+Pake V3.18.0 pins tauri 2.10.x, webview2-com 0.38.x, and windows-core
+0.61.x. Portable appDirectoriesOverride needs Tauri 2.12.0; its WebView2
+interfaces must also use windows-core 0.62 and webview2-com 0.39. These checks fail closed if the upstream
 Cargo manifest/lock layout changes. Do not modify the user's upstream repo.
 """
 from pathlib import Path
@@ -10,9 +11,14 @@ import re
 import sys
 import tomllib
 import json
+import subprocess
 
 TAURI_MINIMUM = (2, 12, 0)
 TAURI_TARGET = '2.12.0'
+WINDOWS_CORE_TARGET = '0.62.2'
+WEBVIEW2_TARGET = '0.39.1'
+UPSTREAM_WINDOWS_CORE = '0.61.2'
+UPSTREAM_WEBVIEW2 = '0.38'
 # Pin a published compatible 2.12.x JavaScript pair rather than keeping Pake 3.18.0's 2.10.x.
 # Tauri's CLI rejects mismatched major/minor API and Rust versions.
 JS_API_TARGET = '2.12.3'
@@ -30,22 +36,79 @@ def lock_tauri_version(root: Path) -> str:
     return versions[0]
 
 
+def direct_windows_versions(root: Path) -> dict[str, str]:
+    """Read the Pake crate's own direct Windows dependencies, not transitive crates."""
+    with (root / 'src-tauri/Cargo.toml').open('rb') as stream:
+        manifest = tomllib.load(stream)
+    windows = manifest['target']["cfg(windows)"]['dependencies']
+    return {name: windows[name] for name in ('windows-core', 'webview2-com')}
+
+
 def verify(root: Path):
     actual = lock_tauri_version(root)
     if actual != TAURI_TARGET:
         raise RuntimeError(f'Expected tauri {TAURI_TARGET} after upgrade; got {actual}')
-    print(f'PASS: Tauri {actual} provides appDirectoriesOverride / isolated app profile paths')
+    windows = direct_windows_versions(root)
+    expected = {'windows-core': '=' + WINDOWS_CORE_TARGET,
+                'webview2-com': '=' + WEBVIEW2_TARGET}
+    if windows != expected:
+        raise RuntimeError(f'Rust WebView2/COM manifest mismatch: {windows!r}; expected {expected!r}')
+    print(f'PASS: Rust Tauri {actual}; direct WebView2 COM versions declared: {windows}')
+
+
+def verify_resolved_windows(root: Path):
+    """Verify the dependency graph actually selected Pake's direct COM package versions.
+
+    An older windows-core may legitimately appear elsewhere transitively; that does
+    not mean Pake's own `use windows_core::...` is mismatched. Check direct edges.
+    """
+    cmd = ['cargo', 'metadata', '--format-version', '1', '--locked',
+           '--manifest-path', str(root / 'src-tauri/Cargo.toml')]
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    metadata = json.loads(result.stdout)
+    packages = {pkg['id']: pkg for pkg in metadata['packages']}
+    target_manifest = (root / 'src-tauri/Cargo.toml').resolve()
+    matches = [pkg for pkg in metadata['packages']
+               if pkg.get('manifest_path') and Path(pkg['manifest_path']).resolve() == target_manifest and pkg['name'] == 'pake']
+    if len(matches) != 1:
+        raise RuntimeError('Cannot locate the exact Pake crate in Cargo metadata')
+    pake_id = matches[0]['id']
+    nodes = [node for node in metadata['resolve']['nodes'] if node['id'] == pake_id]
+    if len(nodes) != 1:
+        raise RuntimeError('Cannot locate Pake direct dependency edges in Cargo metadata')
+    deps = {dep['name']: packages[dep['pkg']]['version'] for dep in nodes[0]['deps']}
+    for dep_name, expected in (('windows_core', WINDOWS_CORE_TARGET),
+                               ('webview2_com', WEBVIEW2_TARGET)):
+        actual = deps.get(dep_name)
+        if actual != expected:
+            raise RuntimeError(f'Actual Pake direct dependency {dep_name}: {actual!r}; expected {expected}')
+    print(f'PASS: Cargo selected Pake direct windows-core {WINDOWS_CORE_TARGET} '
+          f'and webview2-com {WEBVIEW2_TARGET}; WebView2 interface versions aligned')
 
 
 def prepare(root: Path):
+    """Fail closed on unseen upstream layout, and atomically update one manifest."""
     cargo = root / 'src-tauri/Cargo.toml'
     content = cargo.read_text(encoding='utf-8')
-    pattern = r'(tauri\s*=\s*\{\s*version\s*=\s*")2\.10\.2(\"\s*,)'
-    changed, occurrences = re.subn(pattern, r'\g<1>2.12.0\g<2>', content)
-    if occurrences != 1:
-        raise RuntimeError('Upstream tauri dependency version/layout changed; refusing blind upgrade')
-    cargo.write_text(changed, encoding='utf-8')
-    print('Source-only Cargo.toml requirement updated: tauri >=2.12.0 (no upstream fork).')
+    changes = (
+        (r'(tauri\s*=\s*\{\s*version\s*=\s*")2\.10\.2("\s*,)',
+         r'\g<1>2.12.0\g<2>', 'Tauri'),
+        (r'(?m)^(webview2-com\s*=\s*")0\.38("\s*(?:#.*)?)$',
+         r'\g<1>=0.39.1\g<2>', 'WebView2 bindings'),
+        (r'(?m)^(windows-core\s*=\s*")0\.61\.2("\s*(?:#.*)?)$',
+         r'\g<1>=0.62.2\g<2>', 'Windows COM interfaces'),
+    )
+    updated = content
+    for pattern, replacement, component in changes:
+        updated, count = re.subn(pattern, replacement, updated)
+        if count != 1:
+            raise RuntimeError(f'Pake {component} version or Cargo layout changed; refusing partial upgrade')
+    cargo.write_text(updated, encoding='utf-8', newline='\n')
+    versions = direct_windows_versions(root)
+    if versions != {'windows-core': '=0.62.2', 'webview2-com': '=0.39.1'}:
+        raise RuntimeError('Windows COM direct version check failed after rewriting Cargo.toml')
+    print('Updated ephemeral Cargo.toml: Tauri 2.12.0, webview2-com =0.39.1, windows-core =0.62.2')
+    print('Pinned Windows COM crates match the Tauri 2.12 / Wry 0.57 API family.')
 
 
 def prepare_javascript(root: Path):
@@ -94,6 +157,8 @@ if __name__ == '__main__':
         verify_javascript(base)
     elif '--verify' in sys.argv[2:]:
         verify(base)
+    elif '--verify-resolved-windows' in sys.argv[2:]:
+        verify_resolved_windows(base)
     else:
         prepare(base)
 

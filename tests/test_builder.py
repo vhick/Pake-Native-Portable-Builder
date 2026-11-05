@@ -2,6 +2,7 @@
 from pathlib import Path
 import importlib.util
 import json
+from unittest import mock
 import struct
 import tempfile
 import unittest
@@ -80,8 +81,8 @@ class BuilderTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): patchmod.patch_files(root)
 
     def test_existing_release_check_distinguishes_error(self):
-        tag='portable-example-v1.0.0-pake3.18.0-r7-123456789abc'
-        zipname='ExamplePortable_1.0.0_Pake3.18.0_r7_win-x64.zip'
+        tag='portable-example-v1.0.0-pake3.18.0-r8-123456789abc'
+        zipname='ExamplePortable_1.0.0_Pake3.18.0_r8_win-x64.zip'
         self.assertFalse(checkmod.classify_return(1, '', 'release not found', tag, zipname))
         valid={'isDraft':False,'body':'portable-release-publisher:managed:v2',
                'assets':[{'name':zipname},{'name':'SHA256SUMS.txt'}]}
@@ -115,6 +116,63 @@ class BuilderTests(unittest.TestCase):
         self.assertIn('cargo update -p tauri --precise 2.12.0', build)
         self.assertIn('AppDirectoriesOverride::Root', patchmod.CONTEXT_PATCH)
         self.assertIn('src-tauri', code)
+
+    def test_r8_direct_windows_com_upgrade_matches_original_pake_manifest(self):
+        up = module('upgrade-tauri')
+        original = ("[package]\nname = \"pake\"\n[dependencies]\n"
+                    "tauri = { version = \"2.10.2\", features = [\n"
+                    "  \"tray-icon\",\n  \"image-ico\",\n] }\n"
+                    "[target.'cfg(windows)'.dependencies]\n"
+                    "windows-sys = { version = \"0.61.2\", features = [\n"
+                    "  \"Win32_Foundation\",\n] }\n"
+                    "webview2-com = \"0.38\"\n"
+                    "windows-core = \"0.61.2\"\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); folder=root/'src-tauri'; folder.mkdir()
+            manifest=folder/'Cargo.toml'; manifest.write_text(original, encoding='utf-8')
+            up.prepare(root)
+            result=manifest.read_text(encoding='utf-8')
+            self.assertIn('tauri = { version = "2.12.0"', result)
+            self.assertIn('windows-core = "=0.62.2"', result)
+            self.assertIn('webview2-com = "=0.39.1"', result)
+            self.assertIn('windows-sys = { version = "0.61.2"', result)
+            self.assertEqual(up.direct_windows_versions(root),
+                             {'windows-core': '=0.62.2', 'webview2-com': '=0.39.1'})
+            # A new unexpected Pake manifest must fail without partially updating the file.
+            altered=original.replace('webview2-com = "0.38"', 'webview2-com = "0.99"')
+            manifest.write_text(altered, encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError, 'WebView2 bindings'):
+                up.prepare(root)
+            self.assertEqual(manifest.read_text(encoding='utf-8'), altered)
+
+    def test_r8_cargo_metadata_checks_actual_direct_edges_not_transitive_versions(self):
+        up=module('upgrade-tauri')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); cargo=root/'src-tauri/Cargo.toml'
+            cargo.parent.mkdir(parents=True)
+            cargo.write_text('[package]\nname="pake"\nversion="3.18.0"\n')
+            packages=[
+                {'name':'pake','id':'pake-id','manifest_path':str(cargo),'version':'3.18.0'},
+                {'name':'windows-core','id':'win-new','version':'0.62.2'},
+                {'name':'webview2-com','id':'wv-new','version':'0.39.1'},
+                {'name':'windows-core','id':'win-old-transitive','version':'0.61.2'},
+            ]
+            meta={'packages':packages,'resolve':{'nodes':[{'id':'pake-id', 'deps':[
+                {'name':'windows_core','pkg':'win-new'},
+                {'name':'webview2_com','pkg':'wv-new'},
+            ]}]}}
+            with mock.patch.object(up.subprocess, 'run', return_value=mock.Mock(stdout=json.dumps(meta))) as run:
+                up.verify_resolved_windows(root)
+                meta['resolve']['nodes'][0]['deps'][0]['pkg']='win-old-transitive'
+                run.return_value.stdout = json.dumps(meta)
+                with self.assertRaisesRegex(RuntimeError, 'windows_core'):
+                    up.verify_resolved_windows(root)
+
+    def test_r8_windows_preflight_is_before_portability_patch_and_compile(self):
+        text=(ROOT/'scripts/build-website.ps1').read_text(encoding='utf-8')
+        self.assertLess(text.index('--verify-resolved-windows'), text.index('scripts/patch-portability.py'))
+        self.assertLess(text.index('--verify-resolved-windows'), text.index('node dist/cli.js @cliArgs'))
+        self.assertEqual(planmod.BUILDER_REVISION, 'r8')
 
     def test_tauri_js_rewrite_and_installed_versions(self):
         up = module('upgrade-tauri')

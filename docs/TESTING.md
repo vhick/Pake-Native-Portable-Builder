@@ -55,3 +55,10 @@ The GitHub runner validates `wix311-binaries.zip` against the known upstream-rel
 
 ### r7 dependency alignment
 Before Pake generates a website app, verify that its temporary Node packages are `@tauri-apps/api` 2.12.3 and `@tauri-apps/cli` 2.12.2, and its Rust `tauri` crate is 2.12.0. The build fails closed if they disagree.
+
+### r8 additional Rust dependency guard
+
+Before compiling the Pake application, check the Windows build log for:
+`PASS: Cargo selected Pake direct windows-core 0.62.2 and webview2-com 0.39.1`.
+This means the direct COM types are aligned; it does **not** replace an actual
+successful Rust compilation or a runtime portability test.

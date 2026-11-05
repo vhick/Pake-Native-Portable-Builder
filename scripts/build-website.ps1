@@ -41,6 +41,16 @@ try {
     } finally { Pop-Location }
     & python (Join-Path $root 'scripts/upgrade-tauri.py') $upstream --verify
     if ($LASTEXITCODE -ne 0) { throw 'Rust lockfile does not contain required Tauri 2.12.0' }
+    # Guard against Pake's direct WebView2 COM bindings being compiled against
+    # windows-core 0.61 while Tauri 2.12's Wry uses windows-core 0.62.
+    & python (Join-Path $root 'scripts/upgrade-tauri.py') $upstream --verify-resolved-windows
+    if ($LASTEXITCODE -ne 0) { throw 'Pake direct WebView2 COM dependency graph is incompatible with Tauri 2.12' }
+    # Print the direct Rust crate tree for future GitHub Actions diagnostics.
+    Push-Location (Join-Path $upstream 'src-tauri')
+    try {
+        & cargo tree --locked --target x86_64-pc-windows-msvc --depth 1 -p pake
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect direct Rust dependency tree' }
+    } finally { Pop-Location }
     # Patch only the ephemeral fetched source tree; not the original GitHub repository.
     & python (Join-Path $root 'scripts/patch-portability.py') $upstream
     if ($LASTEXITCODE -ne 0) { throw 'Portable source patch failed (upstream compatibility guard)' }
