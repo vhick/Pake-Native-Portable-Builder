@@ -1,179 +1,312 @@
 #!/usr/bin/env python3
-"""Prepare ephemeral Pake source to support documented Tauri 2.12 portable API.
+"""Auto-align disposable Pake Tauri dependencies without hardcoded upstream versions.
 
-Pake V3.18.0 pins tauri 2.10.x, webview2-com 0.38.x, and windows-core
-0.61.x. Portable appDirectoriesOverride needs Tauri 2.12.0; its WebView2
-interfaces must also use windows-core 0.62 and webview2-com 0.39. These checks fail closed if the upstream
-Cargo manifest/lock layout changes. Do not modify the user's upstream repo.
+This tool edits ONLY the fetched source checkout. It needs no credentials or
+separate developer repository. The resolved dependency graph, not release dates
+or regexes for yesterday's Pake version, determines Windows COM compatibility.
+It deliberately refuses Tauri 3, a changed manifest layout, missing graph
+edges, prerelease packages, and source changes outside its proven patch area.
 """
+import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tomllib
-import json
-import subprocess
 
-TAURI_MINIMUM = (2, 12, 0)
-TAURI_TARGET = '2.12.0'
-WINDOWS_CORE_TARGET = '0.62.2'
-WEBVIEW2_TARGET = '0.39.1'
-UPSTREAM_WINDOWS_CORE = '0.61.2'
-UPSTREAM_WEBVIEW2 = '0.38'
-# Pin a published compatible 2.12.x JavaScript pair rather than keeping Pake 3.18.0's 2.10.x.
-# Tauri's CLI rejects mismatched major/minor API and Rust versions.
-JS_API_TARGET = '2.12.3'
-JS_CLI_TARGET = '2.12.2'
-ORIGINAL_JS_API = '~2.10.1'
-ORIGINAL_JS_CLI = '^2.10.0'
+MIN_PORTABLE = (2, 12, 0)
+SEMVER = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$')
 
 
-def lock_tauri_version(root: Path) -> str:
-    with (root / 'src-tauri/Cargo.lock').open('rb') as stream:
-        lock = tomllib.load(stream)
-    versions = [item['version'] for item in lock['package'] if item['name'] == 'tauri']
-    if len(versions) != 1:
-        raise RuntimeError('Unexpected Cargo.lock tauri package count')
-    return versions[0]
+def version(value):
+    match = SEMVER.fullmatch(str(value))
+    if not match:
+        raise RuntimeError(f'Expected stable exact numeric version, got {value!r}')
+    return tuple(map(int, match.groups()))
 
 
-def direct_windows_versions(root: Path) -> dict[str, str]:
-    """Read the Pake crate's own direct Windows dependencies, not transitive crates."""
-    with (root / 'src-tauri/Cargo.toml').open('rb') as stream:
-        manifest = tomllib.load(stream)
-    windows = manifest['target']["cfg(windows)"]['dependencies']
-    return {name: windows[name] for name in ('windows-core', 'webview2-com')}
+def read_lock(root):
+    with (root / 'src-tauri/Cargo.lock').open('rb') as f:
+        return tomllib.load(f)
 
 
-def verify(root: Path):
-    actual = lock_tauri_version(root)
-    if actual != TAURI_TARGET:
-        raise RuntimeError(f'Expected tauri {TAURI_TARGET} after upgrade; got {actual}')
-    windows = direct_windows_versions(root)
-    expected = {'windows-core': '=' + WINDOWS_CORE_TARGET,
-                'webview2-com': '=' + WEBVIEW2_TARGET}
-    if windows != expected:
-        raise RuntimeError(f'Rust WebView2/COM manifest mismatch: {windows!r}; expected {expected!r}')
-    print(f'PASS: Rust Tauri {actual}; direct WebView2 COM versions declared: {windows}')
+def lock_tauri_version(root):
+    candidates = [p['version'] for p in read_lock(root)['package'] if p['name'] == 'tauri']
+    if len(candidates) != 1:
+        raise RuntimeError('Expected exactly one resolved Rust tauri crate in Cargo.lock')
+    return candidates[0]
 
 
-def verify_resolved_windows(root: Path):
-    """Verify the dependency graph actually selected Pake's direct COM package versions.
+def load_manifest(root):
+    with (root / 'src-tauri/Cargo.toml').open('rb') as f:
+        data = tomllib.load(f)
+    if data.get('package', {}).get('name') != 'pake':
+        raise RuntimeError('Cargo.toml is not the Pake crate')
+    if not isinstance(data.get('dependencies', {}).get('tauri'), dict):
+        raise RuntimeError('Unexpected Pake Rust tauri declaration; manual review needed')
+    windows = data.get('target', {}).get('cfg(windows)', {}).get('dependencies', {})
+    if not all(isinstance(windows.get(k), str) for k in ('webview2-com', 'windows-core')):
+        raise RuntimeError('Missing/changed Pake direct Windows COM dependencies; review required')
+    return data
 
-    An older windows-core may legitimately appear elsewhere transitively; that does
-    not mean Pake's own `use windows_core::...` is mismatched. Check direct edges.
-    """
-    cmd = ['cargo', 'metadata', '--format-version', '1', '--locked',
-           '--manifest-path', str(root / 'src-tauri/Cargo.toml')]
-    # Cargo emits UTF-8 JSON even on Windows, but Python's text=True uses
-    # the active Windows locale (often cp1252) for subprocess pipes.  Non-ASCII
-    # metadata can kill the pipe reader and make stdout become None.
-    # Capture bytes first, then decode JSON explicitly.  Never use errors=ignore
-    # on the JSON payload: silently corrupted metadata must fail validation.
-    try:
-        result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError as exc:
-        details = (exc.stderr or b'').decode('utf-8', errors='replace')
-        raise RuntimeError(f'cargo metadata exited {exc.returncode}: {details[-2000:]}') from exc
-    if not isinstance(result.stdout, bytes):
-        raise RuntimeError('Expected binary stdout from cargo metadata, not text')
-    try:
-        metadata = json.loads(result.stdout.decode('utf-8-sig'))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError('cargo metadata did not return valid UTF-8 JSON') from exc
-    packages = {pkg['id']: pkg for pkg in metadata['packages']}
-    target_manifest = (root / 'src-tauri/Cargo.toml').resolve()
-    matches = [pkg for pkg in metadata['packages']
-               if pkg.get('manifest_path') and Path(pkg['manifest_path']).resolve() == target_manifest and pkg['name'] == 'pake']
+
+def rewrite_exact(text, name, new, *, table=False):
+    """Replace one unambiguous TOML dependency version; reject other shapes."""
+    pat = (rf'(?m)^(?P<start>\s*{re.escape(name)}\s*=\s*)'
+           + (r'\{\s*version\s*=\s*' if table else r'')
+           + r'(?P<quote>")(?P<version>[^"]+)(?P<end>"' + (r'\s*,' if table else r'') + r')')
+    matches = list(re.finditer(pat, text))
     if len(matches) != 1:
-        raise RuntimeError('Cannot locate the exact Pake crate in Cargo metadata')
-    pake_id = matches[0]['id']
-    nodes = [node for node in metadata['resolve']['nodes'] if node['id'] == pake_id]
-    if len(nodes) != 1:
-        raise RuntimeError('Cannot locate Pake direct dependency edges in Cargo metadata')
-    deps = {dep['name']: packages[dep['pkg']]['version'] for dep in nodes[0]['deps']}
-    for dep_name, expected in (('windows_core', WINDOWS_CORE_TARGET),
-                               ('webview2_com', WEBVIEW2_TARGET)):
-        actual = deps.get(dep_name)
-        if actual != expected:
-            raise RuntimeError(f'Actual Pake direct dependency {dep_name}: {actual!r}; expected {expected}')
-    print(f'PASS: Cargo selected Pake direct windows-core {WINDOWS_CORE_TARGET} '
-          f'and webview2-com {WEBVIEW2_TARGET}; WebView2 interface versions aligned')
+        raise RuntimeError(f'Cannot safely find exactly one {name} dependency entry')
+    match = matches[0]
+    # Preserve the surrounding table, feature list, comments and unrelated dependencies.
+    return text[:match.start('version')] + new + text[match.end('version'):]
 
 
-def prepare(root: Path):
-    """Fail closed on unseen upstream layout, and atomically update one manifest."""
-    cargo = root / 'src-tauri/Cargo.toml'
-    content = cargo.read_text(encoding='utf-8')
-    changes = (
-        (r'(tauri\s*=\s*\{\s*version\s*=\s*")2\.10\.2("\s*,)',
-         r'\g<1>2.12.0\g<2>', 'Tauri'),
-        (r'(?m)^(webview2-com\s*=\s*")0\.38("\s*(?:#.*)?)$',
-         r'\g<1>=0.39.1\g<2>', 'WebView2 bindings'),
-        (r'(?m)^(windows-core\s*=\s*")0\.61\.2("\s*(?:#.*)?)$',
-         r'\g<1>=0.62.2\g<2>', 'Windows COM interfaces'),
-    )
-    updated = content
-    for pattern, replacement, component in changes:
-        updated, count = re.subn(pattern, replacement, updated)
-        if count != 1:
-            raise RuntimeError(f'Pake {component} version or Cargo layout changed; refusing partial upgrade')
-    cargo.write_text(updated, encoding='utf-8', newline='\n')
-    versions = direct_windows_versions(root)
-    if versions != {'windows-core': '=0.62.2', 'webview2-com': '=0.39.1'}:
-        raise RuntimeError('Windows COM direct version check failed after rewriting Cargo.toml')
-    print('Updated ephemeral Cargo.toml: Tauri 2.12.0, webview2-com =0.39.1, windows-core =0.62.2')
-    print('Pinned Windows COM crates match the Tauri 2.12 / Wry 0.57 API family.')
+def cmd_checked(args, cwd=None):
+    result = subprocess.run(args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        details = (result.stderr or b'').decode('utf-8', errors='replace')
+        raise RuntimeError(f'Command failed ({result.returncode}): {args[:3]}: {details[-2600:]}')
+    return result.stdout
 
 
-def prepare_javascript(root: Path):
-    """Update only the ephemeral checkout's package.json dependency declarations.
+def metadata(root, *, locked=False):
+    args = ['cargo', 'metadata', '--format-version', '1', '--manifest-path',
+            str(root / 'src-tauri/Cargo.toml'), '--filter-platform', 'x86_64-pc-windows-msvc']
+    if locked:
+        args.append('--locked')
+    try:
+        # Cargo metadata writes UTF-8 regardless of the Windows runner locale.
+        return json.loads(cmd_checked(args).decode('utf-8-sig'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise RuntimeError('cargo metadata did not return valid UTF-8 JSON') from e
 
-    pnpm install --no-frozen-lockfile is then responsible for regenerating its
-    lockfile and downloading these specific packages. Do not patch lockfiles by hand.
-    """
-    package_path = root / 'package.json'
-    package = json.loads(package_path.read_text(encoding='utf-8'))
-    if package.get('name') != 'pake-cli':
+
+def graph(meta):
+    packages = {p['id']: p for p in meta['packages']}
+    nodes = {n['id']: n for n in meta['resolve']['nodes']}
+    if len(packages) != len(meta['packages']) or len(nodes) != len(meta['resolve']['nodes']):
+        raise RuntimeError('Duplicate Cargo package IDs')
+    return packages, nodes
+
+
+def edge(nodes, src_id, name):
+    deps = [dep['pkg'] for dep in nodes[src_id].get('deps', []) if dep['name'] == name]
+    if len(deps) != 1:
+        raise RuntimeError(f'Expected one direct Cargo edge {name}, got {len(deps)}')
+    return deps[0]
+
+
+def locate_pake(root, packages):
+    want = (root / 'src-tauri/Cargo.toml').resolve()
+    matches = [p['id'] for p in packages.values()
+               if p['name'] == 'pake' and p.get('manifest_path')
+               and Path(p['manifest_path']).resolve() == want]
+    if len(matches) != 1:
+        raise RuntimeError('Cannot uniquely locate the Pake crate in Cargo dependency graph')
+    return matches[0]
+
+
+def runtime_versions(root, meta):
+    """Follow Pake -> Tauri -> runtime-wry -> wry -> WebView2 -> Windows COM."""
+    packages, nodes = graph(meta)
+    start = locate_pake(root, packages)
+    tauri = edge(nodes, start, 'tauri')
+    if version(packages[tauri]['version']) < MIN_PORTABLE or version(packages[tauri]['version'])[0] != 2:
+        raise RuntimeError('Resolved Tauri is too old or not supported for portable appDirectoriesOverride')
+    # Find *reachable* wry package from the Tauri runtime, not another Wry
+    # version appearing incidentally in the lockfile or build dependencies.
+    queue = [tauri]
+    seen = set()
+    found = set()
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        if packages[current]['name'] == 'wry':
+            found.add(current)
+            continue
+        for dep in nodes[current].get('deps', []):
+            if dep['pkg'] in packages and dep['pkg'] not in seen:
+                queue.append(dep['pkg'])
+    if len(found) != 1:
+        raise RuntimeError(f'Cannot uniquely identify Tauri Windows Wry runtime ({len(found)} found)')
+    wry_id = next(iter(found))
+    web_id = edge(nodes, wry_id, 'webview2_com')
+    core_id = edge(nodes, web_id, 'windows_core')
+    if packages[web_id]['name'] != 'webview2-com' or packages[core_id]['name'] != 'windows-core':
+        raise RuntimeError('Wry WebView2 / Windows COM dependency chain changed')
+    result = {'tauri': packages[tauri]['version'],
+              'wry': packages[wry_id]['version'],
+              'webview2-com': packages[web_id]['version'],
+              'windows-core': packages[core_id]['version']}
+    for val in result.values():
+        version(val)
+    return result
+
+
+def direct_windows_versions(root):
+    d = load_manifest(root)['target']['cfg(windows)']['dependencies']
+    return {name: d[name] for name in ('windows-core', 'webview2-com')}
+
+
+def prepare_rust(root):
+    """Select the upstream locked Rust Tauri if portable-capable, else minimum 2.12.0."""
+    load_manifest(root)
+    locked = lock_tauri_version(root)
+    current = version(locked)
+    if current[0] != 2:
+        raise RuntimeError(f'Unsupported Tauri major {locked}: do not auto-upgrade across major APIs')
+    selected = locked if current >= MIN_PORTABLE else '.'.join(map(str, MIN_PORTABLE))
+    if current < MIN_PORTABLE:
+        path = root / 'src-tauri/Cargo.toml'
+        old = path.read_text(encoding='utf-8')
+        new = rewrite_exact(old, 'tauri', '=' + selected, table=True)
+        if old == new:
+            raise RuntimeError('Tauri version did not change when portable upgrade was required')
+        path.write_text(new, encoding='utf-8', newline='\n')
+        cmd_checked(['cargo', 'update', '-p', 'tauri', '--precise', selected], cwd=root / 'src-tauri')
+    if lock_tauri_version(root) != selected:
+        raise RuntimeError(f'Tauri Cargo.lock mismatch: expected {selected}')
+    # Cargo graph can include Pake's old direct COM versions at this point;
+    # the correct versions are derived from Wry's selected interfaces.
+    need = runtime_versions(root, metadata(root))
+    if need['tauri'] != selected:
+        raise RuntimeError('Cargo resolved a different Rust Tauri than selected')
+    path = root / 'src-tauri/Cargo.toml'
+    original = path.read_text(encoding='utf-8')
+    updated = rewrite_exact(original, 'webview2-com', '=' + need['webview2-com'])
+    updated = rewrite_exact(updated, 'windows-core', '=' + need['windows-core'])
+    if updated != original:
+        path.write_text(updated, encoding='utf-8', newline='\n')
+    # Reconcile Cargo.lock from the changed direct declarations, not by hand.
+    # Do not globally update unrelated crates or overwrite any host project.
+    resolved = metadata(root)
+    verify_rust(root, resolved)
+    print('AUTO-ALIGNED Rust: ' + ', '.join(f'{k}={v}' for k, v in need.items()))
+    return need
+
+
+def verify_rust(root, meta=None):
+    meta = meta if meta is not None else metadata(root, locked=True)
+    require = runtime_versions(root, meta)
+    packages, nodes = graph(meta)
+    pake = locate_pake(root, packages)
+    declared = direct_windows_versions(root)
+    for name in ('webview2-com', 'windows-core'):
+        expected = '=' + require[name]
+        if declared[name] != expected:
+            raise RuntimeError(f'Pake direct {name} declaration {declared[name]!r}; expected {expected}')
+        resolved_id = edge(nodes, pake, name.replace('-', '_'))
+        actual = packages[resolved_id]['version']
+        if actual != require[name]:
+            raise RuntimeError(f'Pake direct {name} resolved {actual}; expected Wry {require[name]}')
+    if lock_tauri_version(root) != require['tauri']:
+        raise RuntimeError('Rust Tauri Cargo.lock mismatch after COM alignment')
+    print('PASS: selected Wry WebView2 COM interface versions match Pake direct crate versions')
+    return require
+
+
+def installed(root, name):
+    path = root / 'node_modules' / '@tauri-apps' / name / 'package.json'
+    if not path.is_file():
+        raise RuntimeError(f'Upstream pnpm installation missing {path}')
+    data = json.loads(path.read_text(encoding='utf-8'))
+    return data['version']
+
+
+def latest_matching(package, major, minor):
+    npm = 'npm.cmd' if os.name == 'nt' else 'npm'
+    # Official npm registry; get version list once, choose highest *stable*
+    # patch within the selected Rust major.minor. Do not upgrade to another minor.
+    blob = cmd_checked([npm, '--registry=https://registry.npmjs.org', 'view',
+                        package, 'versions', '--json'])
+    try:
+        entries = json.loads(blob.decode('utf-8-sig'))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise RuntimeError(f'Invalid npm registry version data for {package}') from e
+    if isinstance(entries, str):
+        entries = [entries]
+    if not isinstance(entries, list):
+        raise RuntimeError('Unexpected npm versions API response')
+    matches = [v for v in entries if isinstance(v, str) and SEMVER.fullmatch(v)
+               and version(v)[:2] == (major, minor)]
+    if not matches:
+        raise RuntimeError(f'No stable {package} {major}.{minor}.x available from npm')
+    return max(matches, key=version)
+
+
+def prepare_javascript(root):
+    """Keep installed compatible upstream packages; replace only mismatches."""
+    rust = lock_tauri_version(root)
+    rv = version(rust)
+    if rv[0] != 2 or rv < MIN_PORTABLE:
+        raise RuntimeError(f'Cannot align JavaScript to unsupported Rust Tauri {rust}')
+    path = root / 'package.json'
+    original = json.loads(path.read_text(encoding='utf-8'))
+    if original.get('name') != 'pake-cli':
         raise RuntimeError('Unexpected upstream Node package')
-    deps = package.get('dependencies', {})
-    for name, old in (('@tauri-apps/api', ORIGINAL_JS_API),
-                      ('@tauri-apps/cli', ORIGINAL_JS_CLI)):
-        if deps.get(name) != old:
-            raise RuntimeError(f'Unexpected upstream {name} version {deps.get(name)!r}; refusing blind rewrite')
-    deps['@tauri-apps/api'] = JS_API_TARGET
-    deps['@tauri-apps/cli'] = JS_CLI_TARGET
-    package_path.write_text(json.dumps(package, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-    print(f'Updated ephemeral package.json: @tauri-apps/api {JS_API_TARGET}, @tauri-apps/cli {JS_CLI_TARGET}')
+    deps = original.get('dependencies', {})
+    for name in ('@tauri-apps/api', '@tauri-apps/cli'):
+        if not isinstance(deps.get(name), str):
+            raise RuntimeError(f'Missing/invalid upstream {name} dependency')
+        old = installed(root, name.split('/')[-1])
+        if version(old)[:2] == rv[:2]:
+            selected = old
+        else:
+            selected = latest_matching(name, *rv[:2])
+        deps[name] = selected   # exact, no ^ or ~, for consistent pnpm.lock
+        print(f'AUTO-ALIGNED {name}: {old} -> {selected} (Rust Tauri {rust})')
+    path.write_text(json.dumps(original, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
 
 
-def verify_javascript(root: Path):
-    """Verify both requested and actually installed packages before CLI builds."""
-    package = json.loads((root / 'package.json').read_text(encoding='utf-8'))
-    deps = package.get('dependencies', {})
-    for name, expected in (('@tauri-apps/api', JS_API_TARGET),
-                           ('@tauri-apps/cli', JS_CLI_TARGET)):
-        if deps.get(name) != expected:
-            raise RuntimeError(f'Expected {name} declaration {expected}, got {deps.get(name)}')
-        actual_path = root / 'node_modules' / '@tauri-apps' / name.split('/')[-1] / 'package.json'
-        if not actual_path.is_file():
-            raise RuntimeError(f'Missing installed Tauri package {actual_path}')
-        actual = json.loads(actual_path.read_text(encoding='utf-8')).get('version')
-        if actual != expected:
-            raise RuntimeError(f'Installed {name} is {actual}, expected {expected}')
-    print(f'PASS: installed JS Tauri API {JS_API_TARGET} and CLI {JS_CLI_TARGET} match Rust Tauri 2.12.x')
+def verify_javascript(root):
+    rv = version(lock_tauri_version(root))
+    data = json.loads((root / 'package.json').read_text(encoding='utf-8'))
+    deps = data['dependencies']
+    for name in ('@tauri-apps/api', '@tauri-apps/cli'):
+        declared = deps[name]
+        actual = installed(root, name.split('/')[-1])
+        if not SEMVER.fullmatch(declared) or declared != actual or version(actual)[:2] != rv[:2]:
+            raise RuntimeError(f'JavaScript {name} declared {declared}, installed {actual}, Rust Tauri {rv}')
+    print(f'PASS: actual installed JavaScript Tauri packages match Rust {rv[0]}.{rv[1]} and exact pnpm declarations')
+
+
+def export_versions(root, destination):
+    resolved = verify_rust(root)
+    verify_javascript(root)
+    data = {'source': 'resolved Cargo.lock and installed pnpm packages',
+            'rust': resolved,
+            'javascript': {name: installed(root, name.split('/')[-1])
+                           for name in ('@tauri-apps/api', '@tauri-apps/cli')},
+            'policy': 'retain upstream portable-capable Tauri 2.x; minimum 2.12; '
+                      'match Rust minor and Wry direct Windows COM versions'}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+    print(f'Verified resolved dependency provenance: {destination}')
+
+
+def main():
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit('Usage: upgrade-tauri.py upstream-source --prepare-rust|--verify-rust|--prepare-js|--verify-js|--export [file]')
+    root = Path(sys.argv[1]).resolve()
+    action = sys.argv[2]
+    if action == '--prepare-rust':
+        prepare_rust(root)
+    elif action == '--verify-rust':
+        verify_rust(root)
+    elif action == '--prepare-js':
+        prepare_javascript(root)
+    elif action == '--verify-js':
+        verify_javascript(root)
+    elif action == '--export' and len(sys.argv) == 4:
+        export_versions(root, Path(sys.argv[3]).resolve())
+    else:
+        raise SystemExit('Unknown action: ' + action)
 
 
 if __name__ == '__main__':
-    base = Path(sys.argv[1])
-    if '--prepare-js' in sys.argv[2:]:
-        prepare_javascript(base)
-    elif '--verify-js' in sys.argv[2:]:
-        verify_javascript(base)
-    elif '--verify' in sys.argv[2:]:
-        verify(base)
-    elif '--verify-resolved-windows' in sys.argv[2:]:
-        verify_resolved_windows(base)
-    else:
-        prepare(base)
-
+    main()

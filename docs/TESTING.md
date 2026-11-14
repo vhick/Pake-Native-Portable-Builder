@@ -1,3 +1,15 @@
+# r10 adaptive alignment acceptance checks
+
+Run **Actions → Build Website as Portable Windows App → Run workflow** with the
+same app URL/name as the successful r9 baseline. Watch for `AUTO-ALIGNED Rust`,
+`AUTO-ALIGNED @tauri-apps/api`, `AUTO-ALIGNED @tauri-apps/cli`, `PASS: selected
+Wry WebView2` and `PASS: actual installed JavaScript Tauri` before compilation.
+The final ZIP must include `Other/Source/RESOLVED-DEPENDENCIES.json`.
+A successful Windows build is still required for r10; offline fixture tests
+are not Windows acceptance results. After a successful build, copy/backup
+`Data`, replace only EXE/App/Other, test login/session persistence, relocation,
+shutdown/restart and rollback before treating an update as accepted.
+
 # Tests and acceptance checklist
 
 ## Automated checks supplied (run on GitHub Windows runner)

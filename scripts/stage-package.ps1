@@ -81,6 +81,7 @@ if (Test-Path -LiteralPath (Join-Path $upstream 'LICENSE-EXCEPTION')) {
 }
 Copy-Item -LiteralPath (Join-Path $root 'scripts/patch-portability.py') -Destination (Join-Path $sourceDir 'portable-source-patch.py')
 Copy-Item -LiteralPath (Join-Path $root 'docs/PORTABILITY.md') -Destination (Join-Path $sourceDir 'PORTABILITY.md')
+Copy-Item -LiteralPath (Join-Path $root 'work/generated/RESOLVED-DEPENDENCIES.json') -Destination (Join-Path $sourceDir 'RESOLVED-DEPENDENCIES.json')
 $manifest = [ordered]@{
     website = [string]$plan.url
     appName = [string]$plan.name

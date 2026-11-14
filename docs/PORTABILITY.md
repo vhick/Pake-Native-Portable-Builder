@@ -1,3 +1,12 @@
+## r10 alignment update
+
+The dependency selector now reads Pake's actual locked Tauri version, dynamically
+aligns its Windows COM dependencies to the *resolved Wry dependency graph*,
+and matches JavaScript Tauri API/CLI packages by major/minor. A changed
+WebView2 storage API or incompatibility in new Tauri source still requires
+manual review; no promise of universal compatibility is made. See
+`docs/AUTO-ALIGNMENT.md` and packaged `RESOLVED-DEPENDENCIES.json`.
+
 # Source-based Windows portability audit — Pake-generated apps
 
 Audited baseline: `tw93/Pake` stable **V3.18.0**, source files listed below. New stable tags are resolved automatically, but source patches **fail closed** if the audited code layout changes.
